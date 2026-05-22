@@ -22,6 +22,7 @@ const { values } = parseArgs({
     repo: { type: "string", short: "r" },
     task: { type: "string", short: "t" },
     "max-turns": { type: "string" },
+    "base-url": { type: "string" },
     help: { type: "boolean", short: "h" },
   },
 });
@@ -44,6 +45,7 @@ OPTIONS:
   -r, --repo        Path to the local repository
   -t, --task        Task description
   --max-turns       Max tool-call turns per session (default: 50)
+  --base-url        Base URL override for the provider API endpoint
   -h, --help        Show this help
 
 ENVIRONMENT VARIABLES (set in .env.local):
@@ -153,6 +155,7 @@ if (values.config) {
     baseline: {},
     enhanced: {},
     maxTurns: values["max-turns"] ? parseInt(values["max-turns"], 10) : 50,
+    ...(values["base-url"] && { baseURL: values["base-url"] }),
   };
 }
 

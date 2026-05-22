@@ -61,6 +61,9 @@ export interface CompareConfig {
   /** API key for the model provider */
   apiKey: string;
 
+  /** Base URL override for the provider API endpoint */
+  baseURL?: string;
+
   /** Path to the local repo to work on */
   repo: string;
 

@@ -36,13 +36,14 @@ const RED = "\x1b[31m";
 function createProvider(
   provider: string,
   apiKey: string,
-  model: string
+  model: string,
+  baseURL?: string
 ): ProviderAdapter {
   switch (provider) {
     case "anthropic":
-      return new AnthropicAdapter(apiKey, model);
+      return new AnthropicAdapter(apiKey, model, baseURL);
     case "openai":
-      return new OpenAIAdapter(apiKey, model);
+      return new OpenAIAdapter(apiKey, model, baseURL);
     default:
       throw new Error(`Unsupported provider: ${provider}`);
   }
@@ -54,13 +55,16 @@ export async function runComparison(config: CompareConfig): Promise<void> {
   console.log(`${BOLD}unblocked-compare${RESET}\n`);
   console.log(`${BOLD}provider:${RESET}  ${config.provider}`);
   console.log(`${BOLD}model:${RESET}     ${config.model}`);
+  if (config.baseURL) {
+    console.log(`${BOLD}base URL:${RESET}  ${config.baseURL}`);
+  }
   console.log(`${BOLD}repo:${RESET}      ${repoPath}`);
   console.log(`${BOLD}task:${RESET}      ${config.task}`);
   console.log(`${BOLD}max turns:${RESET} ${config.maxTurns}`);
   console.log();
 
   // Create the model provider (same instance for both runs = same model, same key)
-  const provider = createProvider(config.provider, config.apiKey, config.model);
+  const provider = createProvider(config.provider, config.apiKey, config.model, config.baseURL);
 
   // ── Connect to MCP servers ────────────────────────────────────────
   const baselineMcpConnections: McpConnection[] = [];

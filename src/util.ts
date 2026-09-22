@@ -36,13 +36,17 @@ export function padLeft(str: string, width: number): string {
   return str.length >= width ? str : " ".repeat(width - str.length) + str;
 }
 
-// Anthropic API per-token pricing ($/M tokens)
+// Per-token API pricing ($/M tokens). Used when the agent CLI reports no cost
+// of its own: Cursor and Codex report tokens only.
 export interface ModelPrice { input: number; output: number; cacheRead: number; cacheWrite: number; cacheWrite1h: number }
 
 const OPUS_PRICE: ModelPrice = { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25, cacheWrite1h: 10 };
 const SONNET_PRICE: ModelPrice = { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75, cacheWrite1h: 6 };
 const HAIKU_PRICE: ModelPrice = { input: 1, output: 5, cacheRead: 0.10, cacheWrite: 1.25, cacheWrite1h: 2 };
 const FABLE_PRICE: ModelPrice = { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5, cacheWrite1h: 20 };
+// OpenAI GPT-5 list price. OpenAI has no cache-write charge. Newer GPT models
+// fall back to this by family; check it against OpenAI's current rate card.
+const GPT_PRICE: ModelPrice = { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0, cacheWrite1h: 0 };
 
 const PRICING: Record<string, ModelPrice> = {
   "claude-opus-5": OPUS_PRICE,
@@ -68,6 +72,7 @@ export function priceFor(model: string): ModelPrice {
   if (id.includes("opus")) return OPUS_PRICE;
   if (id.includes("haiku")) return HAIKU_PRICE;
   if (id.includes("sonnet")) return SONNET_PRICE;
+  if (id.includes("gpt") || id.includes("codex") || /^o\d/.test(id)) return GPT_PRICE;
   return SONNET_PRICE;
 }
 

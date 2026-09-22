@@ -2,7 +2,7 @@ import fs from "node:fs";
 import type { AttributedTurn, Attribution, AttributionTotals, TurnLabel } from "./types.ts";
 import { costAt, formatCost, formatDuration, log, priceFor } from "./util.ts";
 import { runStructured, VERIFY_CMD } from "./analyst.ts";
-import { parseStreamJson } from "./claude.ts";
+import { parseStreamJson } from "./transcript.ts";
 
 interface WalkTool { name: string; args: string; result: string }
 export interface WalkTurn {

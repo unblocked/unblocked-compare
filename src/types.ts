@@ -1,3 +1,5 @@
+import type { AgentName } from "./agents/types.ts";
+
 export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
@@ -27,6 +29,8 @@ export interface RunResult {
   assistantTurns: number;
   finalResponse: string;
   sessionId?: string;
+  // The model the agent reports it ran (or was told to run).
+  model?: string;
   exitCode: number | null;
   timedOut: boolean;
   killedReason?: string;
@@ -209,6 +213,7 @@ export interface ArmResult {
 }
 
 export interface ComparisonResult {
+  agent?: AgentName;
   repo: string;
   task: string;
   branch: string;
@@ -225,9 +230,11 @@ export interface ComparisonResult {
 }
 
 export interface Config {
+  agent: AgentName;
   repo: string;
   task: string;
-  model: string;
+  // Undefined: the agent CLI's own configured default.
+  model?: string;
   timeoutSeconds: number;
   branch: string;
   keepWorktrees: boolean;

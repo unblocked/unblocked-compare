@@ -25,7 +25,7 @@ interface RawOut { structured_output?: unknown; result?: string; total_cost_usd?
 const DEBUG_DIR = process.env.HARNESS_DEBUG_DIR;
 let debugSeq = 0;
 
-const ANALYST_CWD = path.join(os.tmpdir(), "claude-harness-analyst");
+const ANALYST_CWD = path.join(os.tmpdir(), "unblocked-compare-analyst");
 fs.mkdirSync(ANALYST_CWD, { recursive: true });
 
 export function neutralise(s: string): string {

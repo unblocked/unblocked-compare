@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Config } from "./types.ts";
 import { runBatch } from "./runner.ts";
+import { AGENTS, type AgentName } from "./agents/index.ts";
 
 function getCurrentBranch(repoPath: string): string {
   try {
@@ -15,15 +16,16 @@ function getCurrentBranch(repoPath: string): string {
 }
 
 program
-  .name("claude-harness")
-  .description("A/B comparison: Claude Code agent with vs without Unblocked context")
+  .name("unblocked-compare")
+  .description("A/B comparison: a coding agent (Claude Code, Cursor or Codex) with vs without Unblocked context")
   .requiredOption("--repo <path>", "Path to target git repository")
   .requiredOption("--task <string>", "Task description for the agent")
-  .option("--model <model>", "Model for Claude to use", "opus")
+  .option("--agent <name>", `Agent CLI under test: ${Object.keys(AGENTS).join(", ")}`, "claude")
+  .option("--model <model>", "Model for the agent (default: opus for claude; the CLI's configured default for cursor and codex)")
   .option("--timeout <seconds>", "Max seconds per arm (shared across the draft and every review fix pass)", "5400")
   .option("--branch <name>", "Branch to base worktree on (default: current HEAD)")
   .option("--keep-worktrees", "Don't clean up worktrees after run", false)
-  .option("--cli", "Use Unblocked CLI via Bash tool instead of MCP", false)
+  .option("--cli", "Use the Unblocked CLI via the shell instead of MCP (the MCP server is then off in both arms)", false)
   .option("--analyst-model <model>", "Model that labels each message as work/verify/housekeeping", "opus")
   .option("--judge-model <model>", "Model for the quality judge and context-impact passes", "fable")
   .option("--checker-model <model>", "Model for the requirement check: extracts the list, classifies each requirement per round, adjudicates disputes", "sonnet")
@@ -42,6 +44,12 @@ if (!fs.existsSync(repoPath)) {
   process.exit(1);
 }
 
+if (!(opts.agent in AGENTS)) {
+  console.error(`Error: --agent must be one of ${Object.keys(AGENTS).join(", ")}, got ${JSON.stringify(opts.agent)}`);
+  process.exit(1);
+}
+const agent = AGENTS[opts.agent as AgentName];
+
 const timeoutSeconds = parseInt(opts.timeout, 10);
 if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
   console.error(`Error: --timeout must be a positive number of seconds, got ${JSON.stringify(opts.timeout)}`);
@@ -49,9 +57,10 @@ if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
 }
 
 const config: Config = {
+  agent: agent.name,
   repo: repoPath,
   task: opts.task,
-  model: opts.model,
+  model: opts.model ?? agent.defaultModel,
   timeoutSeconds,
   branch: opts.branch ?? getCurrentBranch(repoPath),
   keepWorktrees: opts.keepWorktrees,

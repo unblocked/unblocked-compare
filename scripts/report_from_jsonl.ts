@@ -3,10 +3,12 @@
 // task prompt, branch, and code diffs are not recorded in stream-json output:
 // pass the run's original result.json (third argument, detected by .json
 // extension) to carry them over, or supply model/branch/task as arguments.
-// Repo and model fall back to the transcript's init event.
+// Repo and model fall back to the transcript's init event. Transcripts are
+// canonical (Claude Code stream-json) whatever agent ran: pass <arm>.jsonl,
+// not the <arm>.raw.jsonl a Cursor or Codex run also keeps.
 import fs from "node:fs";
 import path from "node:path";
-import { parseStreamJson, type SessionCumulative } from "../src/claude.ts";
+import { parseStreamJson, type SessionCumulative } from "../src/transcript.ts";
 import { printReport, writeHtmlReport, writeJsonResult } from "../src/report.ts";
 import { estimateCost } from "../src/util.ts";
 import { attribute, buildWalk, rollup } from "../src/attribution.ts";
@@ -135,6 +137,7 @@ for (const a of [baseline, unblocked]) {
 }
 
 const result: ComparisonResult = {
+  ...(orig?.agent ? { agent: orig.agent } : {}),
   repo,
   task,
   branch,

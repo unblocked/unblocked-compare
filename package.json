@@ -1,11 +1,12 @@
 {
-  "name": "claude-harness",
+  "name": "unblocked-compare",
   "version": "0.1.0",
-  "description": "A/B comparison: Claude Code agent with vs without Unblocked context",
+  "description": "A/B comparison: a coding agent (Claude Code, Cursor or Codex) with vs without Unblocked context",
   "type": "module",
   "license": "MIT",
   "scripts": {
     "start": "bun src/index.ts",
+    "compare": "bun src/index.ts",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test"
   },

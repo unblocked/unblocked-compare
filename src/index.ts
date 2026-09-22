@@ -49,6 +49,10 @@ if (!(opts.agent in AGENTS)) {
   process.exit(1);
 }
 const agent = AGENTS[opts.agent as AgentName];
+if (agent.cliOnly && !opts.cli) {
+  console.error(`${agent.label}: using the Unblocked CLI (--cli). ${agent.cliOnly}.`);
+  opts.cli = true;
+}
 
 const timeoutSeconds = parseInt(opts.timeout, 10);
 if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {

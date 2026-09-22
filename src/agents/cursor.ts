@@ -142,6 +142,10 @@ export function translator(rename: Map<string, string>): Translator {
 export const cursor: Agent = {
   name: "cursor",
   label: "Cursor",
+  // Cursor keys MCP OAuth tokens to the workspace path
+  // (~/.cursor/projects/<path>/mcp-auth.json), so a fresh worktree has none and
+  // `agent mcp login` needs a browser.
+  cliOnly: "Cursor keeps MCP OAuth per workspace path, so the Unblocked MCP server is unauthenticated in a fresh worktree",
 
   // MCP enablement is per workspace in Cursor (`agent mcp disable` run in the
   // worktree only affects that path), so each arm's fresh worktree gets its

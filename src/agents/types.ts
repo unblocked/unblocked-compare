@@ -25,6 +25,9 @@ export interface Agent {
   // Model used when --model is not given. Undefined means the agent CLI's own
   // configured default, which the adapter reports in RunResult.model.
   defaultModel?: string;
+  // Set when the agent cannot reach the Unblocked MCP server headlessly: the
+  // reason, logged when the harness switches the comparison to the CLI.
+  cliOnly?: string;
   // Per-arm setup in the fresh worktree, before the first run.
   prepareWorktree(wtPath: string, condition: Condition, cliMode: boolean): void;
   run(opts: AgentRunOpts): Promise<RunResult>;

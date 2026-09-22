@@ -7,7 +7,7 @@ Supported agents (`--agent`):
 | Agent | CLI | Default model |
 |---|---|---|
 | `claude` (default) | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`) | `opus` |
-| `cursor` | [Cursor CLI](https://cursor.com/cli) (`agent`) | Cursor's configured default |
+| `cursor` | [Cursor CLI](https://cursor.com/cli) (`agent`) | Cursor's configured default; always `--cli` (see below) |
 | `codex` | [OpenAI Codex CLI](https://github.com/openai/codex) (`codex`) | `model` in `~/.codex/config.toml` |
 
 ## How it works
@@ -31,7 +31,7 @@ Supported agents (`--agent`):
 - [Bun](https://bun.sh) runtime
 - The CLI of the agent under test, installed and authenticated: `claude`, `agent` (Cursor) or `codex`
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`) in every case: the requirement check, attribution, quality judge and impact passes run through `claude -p` whatever agent is under test
-- Unblocked configured as an MCP server in the agent under test (`~/.claude.json`, `~/.cursor/mcp.json` or `~/.codex/config.toml`), or the [Unblocked CLI](https://getunblocked.com) for `--cli` mode
+- Unblocked configured as an MCP server in the agent under test (`~/.claude.json` or `~/.codex/config.toml`), or the [Unblocked CLI](https://getunblocked.com), authenticated, for `--cli` mode and for Cursor
 
 ## Usage
 
@@ -189,7 +189,7 @@ Every analysis pass reads Claude Code's stream-json. The Cursor and Codex adapte
 ### How blocking works
 
 - **Claude Code**: the baseline passes a separate `--disallowed-tools` flag for each Unblocked MCP tool and the `Bash(unblocked *)` pattern, so the tools are absent rather than refused.
-- **Cursor**: MCP enablement is per workspace. Each arm runs in its own fresh worktree, where the harness runs `agent mcp disable <server>` (baseline) or `agent mcp enable <server>` (Unblocked arm) before the first run. The arms stay parallel and your own workspaces are untouched. Unblocked servers are found by name or URL in `~/.cursor/mcp.json` and the repo's `.cursor/mcp.json`.
+- **Cursor**: runs in CLI mode only. Cursor keeps MCP OAuth tokens per workspace path (`~/.cursor/projects/<path>/mcp-auth.json`), so the Unblocked MCP server is unauthenticated in a fresh worktree, and `agent mcp login` needs a browser. MCP enablement is also per workspace. Each arm runs in its own fresh worktree, where the harness runs `agent mcp disable <server>` (baseline) or `agent mcp enable <server>` (Unblocked arm) before the first run. The arms stay parallel and your own workspaces are untouched. Unblocked servers are found by name or URL in `~/.cursor/mcp.json` and the repo's `.cursor/mcp.json`.
 - **Codex**: the baseline passes `-c mcp_servers.<server>.enabled=false` for each Unblocked server in `~/.codex/config.toml`.
 - In every case the Unblocked CLI stays on the baseline's PATH. The prompt forbids it and the contamination guard kills the run if it is used.
 

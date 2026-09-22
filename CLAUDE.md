@@ -1,45 +1,33 @@
-# unblocked-compare
+# claude-harness
 
-Local A/B comparison tool. Runs the same task twice against a customer's repo — once with their current setup, once with Unblocked — and produces a structured comparison.
+A/B comparison: run a task with Claude Code with and without Unblocked context, then compare results.
 
-## How to run a comparison
-
-Keys must be in `.env.local` (never in CLI flags, never in config files):
-
-```
-# Set the one that matches --provider
-ANTHROPIC_API_KEY=...           # --provider anthropic
-OPENAI_API_KEY=...              # --provider openai
-
-# Always required
-UNBLOCKED_API_TOKEN=...
-```
-
-Then run with CLI flags — no config file needed:
+## Running
 
 ```bash
-bun run compare \
-  --provider anthropic \
-  --model claude-sonnet-4-6 \
-  --repo /path/to/target/repo \
-  --task "Description of the engineering task"
+bun start -- --repo /path/to/repo --task "implement feature X"
 ```
 
-Supported providers: `anthropic`, `openai`.
+Defaults to a batch of 2 comparisons (`--repeat 2`); pass `--repeat 1` for one. `--review` adds the requirement check and fix loop. See README for all flags.
 
-The `--repo` flag points to the repository the agent works on. It is not this repo — it is the customer's application repo.
+Set `CLAUDE_BINARY` env var to override binary name (default: `claude`).
 
-## When to use a config file
+## Architecture
 
-Only use `--config compare.json` when bringing MCP servers (Glean, Sourcegraph, etc.) to the baseline run. For simple comparisons, CLI flags are sufficient.
+- `src/index.ts` — CLI flags and defaults
+- `src/runner.ts` — Orchestrate: batches, parallel arm execution, review loop, diff capture, nudges
+- `src/claude.ts` — Spawn Claude Code CLI, parse stream-json, manage worktrees, contamination detection
+- `src/review.ts` — Shared requirement list, per-round check, disputes and waivers
+- `src/analyst.ts` — Structured single-turn model calls, blinding
+- `src/attribution.ts` — Per-message cost/time walk and work/verify/housekeeping labels
+- `src/quality.ts` — Blinded quality judge and tie-breaker
+- `src/impact.ts`, `src/economics.ts` — Context-impact pass and cost/time breakdown
+- `src/report.ts` — Console + HTML + JSON comparison reports, batch summary
+- `src/git.ts`, `src/util.ts`, `src/types.ts` — Git helpers, pricing and formatting, shared types
+- `scripts/report_from_jsonl.ts` — Regenerate a report from saved transcripts
 
-## Key files
+## Conventions
 
-- `src/cli.ts` — CLI entry point
-- `src/harness.ts` — procedural agent loop (the core)
-- `src/compare.ts` — orchestrates baseline vs enhanced runs
-- `src/providers/` — model API adapters (Anthropic, OpenAI)
-- `src/tools/builtin.ts` — local tools (bash, read, write, edit, grep)
-- `src/tools/mcp-client.ts` — generic MCP client for arbitrary servers
-- `src/costs.ts` — deterministic cost calculation from token counts
-- `src/judge.ts` — single blinded LLM-as-judge call (only non-procedural step)
+- Bun + TypeScript, no build step
+- Use `bun <file>` not `node <file>`
+- Error handling: throw on unrecoverable, log + continue on per-run failures

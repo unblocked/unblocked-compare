@@ -1,20 +1,20 @@
 {
   "name": "unblocked-compare",
   "version": "0.1.0",
-  "description": "Local A/B comparison tool: your LLM + toolchain vs your LLM + Unblocked",
-  "module": "src/cli.ts",
+  "description": "A/B comparison: a coding agent (Claude Code, Cursor or Codex) with vs without Unblocked context",
   "type": "module",
-  "private": true,
+  "license": "MIT",
   "scripts": {
-    "compare": "bun run src/cli.ts"
+    "start": "bun src/index.ts",
+    "compare": "bun src/index.ts",
+    "typecheck": "bunx tsc --noEmit",
+    "test": "bun test"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.86.1",
-    "openai": "^4.80.0",
-    "@modelcontextprotocol/sdk": "^1.12.1"
+    "commander": "^13.0.0"
   },
   "devDependencies": {
-    "@types/bun": "latest",
-    "typescript": "^5"
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.7.0"
   }
 }

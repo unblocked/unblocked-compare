@@ -1,7 +1,9 @@
 node_modules/
 dist/
+results/
+.idea/
+*.tsbuildinfo
+.DS_Store
 .env
 .env.local
-results/
-compare.json
 *.log

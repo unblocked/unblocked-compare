@@ -1,290 +1,208 @@
 # unblocked-compare
 
-Local A/B comparison tool that measures what Unblocked adds to your existing LLM workflow.
+A/B comparison harness for coding agents: runs the same coding task twice in the agent a team already uses — once without [Unblocked](https://getunblocked.com) context (baseline) and once with — then produces structured comparison reports.
 
-You bring your model API key and your existing MCP tools. The tool runs the same task twice -- once with your current setup, once with Unblocked -- and produces a structured comparison of quality, cost, and time.
+Supported agents (`--agent`):
+
+| Agent | CLI | Default model |
+|---|---|---|
+| `claude` (default) | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`) | `opus` |
+| `cursor` | [Cursor CLI](https://cursor.com/cli) (`agent`) | Cursor's configured default; always `--cli` (see below) |
+| `codex` | [OpenAI Codex CLI](https://github.com/openai/codex) (`codex`) | `model` in `~/.codex/config.toml` |
 
 ## How it works
 
-1. **Run A (Baseline):** Your model + built-in coding tools + your MCP servers (Glean, Sourcegraph, etc.)
-2. **Run B (Enhanced):** Same model + same tools + Unblocked MCP (+ any additional MCPs you need)
-3. **Report:** Deterministic metrics (tokens, cost, time) + a single blinded LLM-as-judge evaluation
+1. Creates two isolated git worktrees from the same branch
+2. Runs the agent in parallel on both:
+   - **Baseline**: all MCP servers and tools available *except* Unblocked (see [How blocking works](#how-blocking-works))
+   - **Unblocked**: all MCP servers and tools available, with a nudge to call `context_research` first and throughout
+   - Both arms get the same research and reporting instructions; only the tool availability differs
+3. Captures diffs, token usage, cost, tool calls, and timing from both runs. Each agent's event stream is translated into one canonical transcript (Claude Code's stream-json), so every analysis below works the same for every agent
+4. With `--review`: extracts one requirement list from the task, checks each arm's diff against it, and resumes the arm's session for a fix pass until every requirement is met or the round cap is reached. A requirement waived on one arm's dispute is waived for both.
+5. Analyses the pair:
+   - **Attribution**: labels each API message as work, verification or housekeeping, so cost and time can be reported for core task work
+   - **Quality judge** (blinded, arms presented in random order): requirements met, then introduced defects, then material hygiene, else a tie
+   - **Context impact** (un-blinded): what the Unblocked research changed, and what drove the cost and time difference
+   - **Tie-breaker**: a blinded tie goes to Unblocked only when the impact pass traces a decisive discovery to the research context; the report marks it and keeps the blinded verdict alongside
+6. Generates console, JSON, and HTML reports per comparison, and a batch summary across repeats
 
-Everything is procedural. The only LLM calls are the agent performing the task and a single judge call at the end. No LLM in the loop control, metric collection, or test setup.
+## Requirements
 
-## Setup
+- [Bun](https://bun.sh) runtime
+- The CLI of the agent under test, installed and authenticated: `claude`, `agent` (Cursor) or `codex`
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`) in every case: the requirement check, attribution, quality judge and impact passes run through `claude -p` whatever agent is under test
+- Unblocked configured as an MCP server in the agent under test (`~/.claude.json` or `~/.codex/config.toml`), or the [Unblocked CLI](https://getunblocked.com), authenticated, for `--cli` mode and for Cursor
 
-Install [Bun](https://bun.sh) if you don't have it:
-
-```bash
-curl -fsSL https://bun.sh/install | bash
-```
-
-Clone and install:
-
-```bash
-git clone https://github.com/unblocked-web/unblocked-compare.git
-cd unblocked-compare
-bun install
-```
-
-Create `.env.local` with your API keys:
-
-```bash
-cp .env.local.example .env.local
-```
-
-Edit `.env.local` and fill in the key for your provider plus the Unblocked token:
-
-```
-# Set the one that matches your --provider flag
-ANTHROPIC_API_KEY=             # --provider anthropic
-OPENAI_API_KEY=                # --provider openai
-
-# Always required
-UNBLOCKED_API_TOKEN=
-```
-
-You only need one provider key -- whichever matches the `--provider` flag you use. Bun automatically loads `.env.local` at runtime.
-
-Get your Unblocked API token from your account at [getunblocked.com](https://getunblocked.com), or ask your Unblocked contact for a trial token.
-
-That's it for setup. You only do this once.
-
-## Running a comparison
-
-Point the tool at any local repository and give it a task:
+## Usage
 
 ```bash
-bun run compare \
-  --provider anthropic \
-  --model claude-sonnet-4-6 \
-  --repo /path/to/your/app \
-  --task "Add rate limiting to the /api/webhooks endpoint"
+bun start -- --repo /path/to/repo --task "implement feature X"
+bun start -- --agent cursor --repo /path/to/repo --task "implement feature X"
+bun start -- --agent codex --model gpt-5.5 --repo /path/to/repo --task "implement feature X"
 ```
 
-The `--repo` flag is a path to any git repository on your machine -- this is the codebase the agent will read, edit, and run tests against. The comparison harness stays in `unblocked-compare/`; your application repo is where the actual work happens.
+**The defaults run a batch.** `--repeat` defaults to 2, so the command above runs two full comparisons (four agent sessions, two at a time) plus the analysis passes. Pass `--repeat 1` for a single comparison. Each arm's `--timeout` (90 minutes by default) is shared by its draft and all of its fix passes. On macOS the harness runs `caffeinate` so the machine does not sleep mid-run.
 
-Results are written to a timestamped directory under `results/`.
+### Options
 
-### CLI options
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--repo <path>` | Path to target git repository | *required* |
+| `--task <string>` | Task description for the agent | *required* |
+| `--agent <name>` | Agent under test: `claude`, `cursor` or `codex` | `claude` |
+| `--model <model>` | Model for the agents | `opus` for claude; the CLI's configured default otherwise |
+| `--timeout <seconds>` | Max seconds per arm, shared across the draft and every fix pass | `5400` |
+| `--branch <name>` | Branch to base worktrees on | current HEAD |
+| `--keep-worktrees` | Don't clean up worktrees after run | `false` |
+| `--cli` | Use the Unblocked CLI via the shell instead of MCP; the MCP server is then off in both arms | `false` |
+| `--repeat <n>` | Full comparisons to run for this task; the batch summary aggregates them | `2` |
+| `--concurrency <n>` | Comparisons to run at once | `2` |
+| `--review` | Requirement check and fix rounds per arm until every task requirement is met, or the cap | `false` |
+| `--max-review-rounds <n>` | Cap on check-and-fix rounds when `--review` is on | `3` |
+| `--checker-model <model>` | Model for the requirement check: extracts the list, grades each requirement per round, rules on disputes | `sonnet` |
+| `--judge-model <model>` | Model for the quality judge and context-impact passes | `fable` |
+| `--analyst-model <model>` | Model that labels each message as work, verification or housekeeping | `opus` |
+| `--no-attribution` | Skip the attribution pass (currently also skips the judge and impact passes) | attribution on |
 
-| Flag | Short | Description |
-|---|---|---|
-| `--provider` | `-p` | Model provider: `anthropic` or `openai` |
-| `--model` | `-m` | Model identifier (e.g. `claude-sonnet-4-6`, `gpt-4o`) |
-| `--repo` | `-r` | Path to the local repository to work on |
-| `--task` | `-t` | Engineering task for the agent to perform |
-| `--max-turns` | | Max tool-call turns per session (default: 50) |
-| `--config` | `-c` | Path to a JSON config file (for advanced use with MCPs) |
-| `--help` | `-h` | Show help |
+### Environment variables
 
-## Bringing your own MCP servers
+| Variable | Description |
+|----------|-------------|
+| `CLAUDE_BINARY` | Override Claude CLI binary name (default: `claude`) |
+| `CURSOR_BINARY` | Override Cursor CLI binary name (default: `agent`) |
+| `CODEX_BINARY` | Override Codex CLI binary name (default: `codex`) |
+| `CODEX_HOME` | Codex config directory, read for the default model and the Unblocked server name (default: `~/.codex`) |
+| `HARNESS_DEBUG_DIR` | Directory to write the raw CLI output of every analysis call (checker, judge, analyst, impact) |
 
-When you want to compare Unblocked against another context tool (Glean, Sourcegraph, etc.) or include internal MCP servers, use a config file:
+### Examples
+
+A reviewed batch of three comparisons:
 
 ```bash
-bun run compare --config compare.json
+bun start -- \
+  --repo ~/code/my-project \
+  --task "$(cat task.txt)" \
+  --branch origin/main \
+  --review \
+  --repeat 3
 ```
 
-### Config file structure
+A single quick comparison with no review loop:
 
-```json
-{
-  "provider": "anthropic",
-  "model": "claude-sonnet-4-6",
-  "repo": "/path/to/your/app",
-  "task": "Add rate limiting to the /api/webhooks endpoint",
-  "baseline": {
-    "mcpServers": {
-      "glean": {
-        "type": "sse",
-        "url": "https://acme.glean.com/mcp",
-        "headers": { "Authorization": "Bearer glean_token_here" }
-      }
-    }
-  },
-  "enhanced": {},
-  "maxTurns": 30
-}
+```bash
+bun start -- \
+  --repo ~/code/my-project \
+  --task 'Add rate limiting to the /api/users endpoint following existing patterns' \
+  --repeat 1 \
+  --keep-worktrees
 ```
 
-API keys are always read from `.env.local` -- they do not go in the config file.
+If the base branch is behind its upstream the harness warns at start: when the task's fix has already landed upstream, both arms find it and the comparison measures something else.
 
-The config file is only needed when you are bringing MCP servers. For simple comparisons (no MCPs in the baseline), use CLI flags directly.
+### Regenerating a report
 
-### MCP server types
+Reports can be rebuilt from saved transcripts after a parser or report change, with no agent runs:
 
-| Type | Required fields | Use case |
-|---|---|---|
-| `sse` | `url` | Cloud-hosted MCP servers (Glean, Unblocked, custom HTTP servers) |
-| `stdio` | `command` | Locally-installed MCP servers (Sourcegraph CLI, custom tools) |
-
-Optional fields for `sse`: `headers` (object of HTTP headers, e.g. for auth tokens).
-
-Optional fields for `stdio`: `args` (array of CLI arguments), `env` (object of environment variables).
-
-Both runs support any number of MCP servers. Run B automatically includes Unblocked.
-
-### Example: Glean vs Unblocked
-
-```json
-{
-  "provider": "anthropic",
-  "model": "claude-sonnet-4-6",
-  "repo": "/path/to/your/app",
-  "task": "Add retry logic to the payment service webhook handler",
-  "baseline": {
-    "mcpServers": {
-      "glean": {
-        "type": "sse",
-        "url": "https://acme.glean.com/mcp",
-        "headers": { "Authorization": "Bearer glean_token_here" }
-      }
-    }
-  },
-  "enhanced": {},
-  "maxTurns": 40
-}
+```bash
+bun scripts/report_from_jsonl.ts <baseline.jsonl> <unblocked.jsonl> <result.json> [--attribute[=model]] [--rejudge[=model]] [--impact[=model]]
 ```
 
-Run A gets the model + Glean. Run B gets the model + Unblocked. The report shows which context source produces better results.
-
-### Example: local Sourcegraph MCP server
-
-```json
-{
-  "provider": "openai",
-  "model": "gpt-4o",
-  "repo": "/path/to/your/app",
-  "task": "Refactor the user service to use the new auth middleware",
-  "baseline": {
-    "mcpServers": {
-      "sourcegraph": {
-        "type": "stdio",
-        "command": "sourcegraph-mcp-server",
-        "args": ["--endpoint", "https://sourcegraph.internal.com"],
-        "env": { "SRC_ACCESS_TOKEN": "sgp_your_token" }
-      }
-    }
-  },
-  "enhanced": {},
-  "maxTurns": 30
-}
-```
-
-### Adding MCPs to the enhanced run
-
-Enterprise customers may need internal MCP servers in both runs (e.g. an internal deployment tool). Add them under `enhanced.mcpServers` -- Unblocked is always included automatically:
-
-```json
-{
-  "provider": "anthropic",
-  "model": "claude-sonnet-4-6",
-  "repo": "/path/to/your/app",
-  "task": "Deploy the hotfix to staging",
-  "baseline": {
-    "mcpServers": {
-      "deploy-tool": {
-        "type": "sse",
-        "url": "https://deploy.internal.com/mcp",
-        "headers": { "Authorization": "Bearer deploy_token" }
-      }
-    }
-  },
-  "enhanced": {
-    "mcpServers": {
-      "deploy-tool": {
-        "type": "sse",
-        "url": "https://deploy.internal.com/mcp",
-        "headers": { "Authorization": "Bearer deploy_token" }
-      }
-    }
-  },
-  "maxTurns": 30
-}
-```
+Tokens, cost, time and tool calls are always re-parsed from the transcripts. The task, branch, diffs, review record, analyst labels, verdict and impact are carried over from `result.json`. The flags re-run the corresponding model pass (they cost money; without them the regeneration is free). Output goes to `results/regenerated/` under the current directory. Without a `result.json`, pass `[model] [branch] [task]` instead; diffs are then unavailable.
 
 ## Output
 
-Each run produces a timestamped directory under `results/`:
+A batch (`--repeat` 2 or more) writes to `results/batch-<timestamp>-<id>/`:
 
 ```
-results/2026-04-15T14-30-00/
-  comparison.md       # Side-by-side metrics table + judge analysis
-  comparison.json     # Machine-readable metrics (for aggregation across runs)
-  baseline.md         # Full session transcript for Run A
-  enhanced.md         # Full session transcript for Run B
+results/batch-2026-09-20T06-12-45-805Z-6e2d/
+├── summary.html             # Verdict tally and medians across the runs
+├── summary.json
+├── requirements.json        # The shared requirement list (with --review)
+├── run-1/
+│   ├── baseline/
+│   │   ├── baseline.jsonl         # Canonical transcript: draft plus any fix passes
+│   │   ├── baseline.raw.jsonl     # Cursor and Codex: the CLI's own output, untranslated
+│   │   ├── baseline.draft.jsonl   # With --review: the draft alone
+│   │   └── baseline.fix1.jsonl    # With --review: each fix pass
+│   ├── unblocked/
+│   │   └── unblocked.jsonl
+│   ├── result.json          # Structured comparison data
+│   └── report.html          # Visual comparison report
+└── run-2/
 ```
 
-### Metrics captured
+A single comparison (`--repeat 1`) writes the contents of one `run-N/` folder to `results/run-<timestamp>/`.
 
-| Metric | How it is measured |
-|---|---|
-| Wall-clock time | `Date.now()` delta in the harness |
-| Input/output tokens | From model API response metadata (exact) |
-| Estimated cost | Tokens x published per-token rate (computed) |
-| Tool call count | Counter in the harness loop (exact) |
-| MCP query count | Counter on MCP-routed tool calls (exact) |
-| Quality scores (1-10) | LLM-as-judge, blinded and position-randomized |
+The HTML report opens automatically and includes:
+- Core task work: cost, model time, tool wait and tokens with housekeeping removed, next to the raw run totals
+- The blinded quality verdict with per-criterion scores and findings
+- The context-impact read: what the research changed, and which terms drove the cost and time difference
+- The review record: each requirement's status per round, fix-pass cost, disputes and waivers
+- Tool usage, slowest tool calls, and the Unblocked queries used
+- Full diffs from both arms
 
-### Judge evaluation
+A run that was killed (contamination, no research call, timeout, or an API error such as a session limit) gets no verdict and is left out of the batch tally and medians.
 
-The judge is a single LLM call at the end. It receives both session transcripts with labels randomized (Session A/B, not Baseline/Enhanced) and scores each on:
+## Architecture
 
-1. **Understanding** -- Did the agent correctly understand the context and intent?
-2. **Implementation** -- Were the changes appropriate and pattern-consistent?
-3. **Context awareness** -- Did the agent discover relevant prior work or decisions?
-4. **Risk awareness** -- Did the agent flag risks or related ongoing work?
-5. **Efficiency** -- Time and token usage relative to output quality.
+```
+src/
+├── index.ts        CLI entry point (commander)
+├── runner.ts       Orchestration: batches, parallel arms, review loop, diff capture, nudge prompts
+├── agents/
+│   ├── types.ts    Agent interface: per-worktree setup, run (and resume) a session
+│   ├── session.ts  Shared spawn loop: stream → canonical transcript, timeout, contamination guards
+│   ├── claude.ts   Claude Code adapter (its stream-json is the canonical format)
+│   ├── cursor.ts   Cursor adapter and stream-json translator
+│   └── codex.ts    Codex adapter and `exec --json` translator
+├── transcript.ts   Canonical transcript parser (tokens, cost, tool calls, timing)
+├── worktree.ts     Worktree creation and cleanup, agent branch reset
+├── git.ts          Git helpers
+├── review.ts       Requirement extraction, per-round check, dispute rulings and waivers
+├── analyst.ts      Single-turn structured model calls, blinding of treatment names
+├── attribution.ts  Per-message walk: cost, model time, tool wait, stalls; work/verify/housekeeping labels
+├── quality.ts      Blinded quality judge, verification record, tie-breaker
+├── impact.ts       Un-blinded context-impact pass
+├── economics.ts    Cost and time breakdown between the arms
+├── report.ts       Console + HTML + JSON reports, batch summary
+├── util.ts         Token pricing, formatting helpers
+└── types.ts        Shared type definitions
+scripts/
+└── report_from_jsonl.ts   Regenerate a report from saved transcripts
+```
 
-Scores are 1-10 per dimension, totaled out of 50. The judge can use a different model than the agent runs -- configure this with the `judge` field in the config file.
+### Canonical transcript
 
-## How it stays fair
+Every analysis pass reads Claude Code's stream-json. The Cursor and Codex adapters translate as they stream:
 
-- **Same model, same harness, same tools.** Both runs use the identical provider instance, system prompt, and built-in tools. The only variable is which MCP servers are connected.
-- **Repo reset between runs.** If the target is a git repository, the working tree is reset to a clean state between Run A and Run B so both start from identical code.
-- **Blinded evaluation.** The judge does not know which session had Unblocked. Session order is randomized to eliminate position bias.
-- **Procedural metrics.** Token counts, timing, and costs are computed from API response metadata and published pricing. No estimation or LLM involvement.
+- Tools map to Claude Code names and inputs: shell → `Bash` (`command`), file reads and edits → `Read`/`Edit`/`Write` (`file_path`), MCP → `mcp__<server>__<tool>`. Codex's `/bin/zsh -lc '…'` wrapper is unwrapped. An Unblocked MCP server configured under another name is renamed `unblocked`.
+- Messages: Cursor's `model_call_id` groups one model response. Codex has no message boundaries, so a new message starts at the first model output after a tool result.
+- Time: Cursor events carry timestamps. Codex events don't, so arrival time stands in.
+- Tokens: Cursor and Codex report totals per session only, not per message, so per-message cost and output in the attribution are apportioned (the report marks per-message output as estimated). Codex's `input_tokens` includes cached tokens; they are split out. Neither reports cost, so cost is tokens × the list price in `src/util.ts`.
 
-## Supported providers and models
+### Contamination guards
 
-Any model that supports tool use through these providers:
+- **Baseline arm**: Unblocked MCP tools and CLI blocked via `--disallowed-tools`. If the baseline somehow calls Unblocked, the run is killed immediately.
+- **Unblocked arm**: If Unblocked isn't called within 120 seconds, the run is killed (ensures the nudge prompt worked).
+- A killed arm voids the comparison: no quality verdict or impact pass is run for it.
 
-| Provider | `--provider` | Env var | Example models |
-|---|---|---|---|
-| Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5-20251001 |
-| OpenAI | `openai` | `OPENAI_API_KEY` | gpt-4o, gpt-4o-mini, gpt-4.1, gpt-4.1-mini, o3, o3-mini, o4-mini |
+### How blocking works
 
-Cost estimation requires the model to be listed in the pricing table in `src/costs.ts`. Unlisted models still work -- cost is reported as unknown.
+- **Claude Code**: the baseline passes a separate `--disallowed-tools` flag for each Unblocked MCP tool and the `Bash(unblocked *)` pattern, so the tools are absent rather than refused.
+- **Cursor**: runs in CLI mode only. Cursor keeps MCP OAuth tokens per workspace path (`~/.cursor/projects/<path>/mcp-auth.json`), so the Unblocked MCP server is unauthenticated in a fresh worktree, and `agent mcp login` needs a browser. MCP enablement is also per workspace. Each arm runs in its own fresh worktree, where the harness runs `agent mcp disable <server>` (baseline) or `agent mcp enable <server>` (Unblocked arm) before the first run. The arms stay parallel and your own workspaces are untouched. Unblocked servers are found by name or URL in `~/.cursor/mcp.json` and the repo's `.cursor/mcp.json`.
+- **Codex**: the baseline passes `-c mcp_servers.<server>.enabled=false` for each Unblocked server in `~/.codex/config.toml`.
+- In every case the Unblocked CLI stays on the baseline's PATH. The prompt forbids it and the contamination guard kills the run if it is used.
 
-## Config file reference
+## Tips for good comparison tasks
 
-| Field | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `provider` | `"anthropic"` or `"openai"` | Yes | -- | Model API provider |
-| `model` | string | Yes | -- | Model identifier |
-| `repo` | string | Yes | -- | Path to local repository |
-| `task` | string | Yes | -- | Task description for the agent |
-| `baseline` | object | No | `{}` | Baseline run config |
-| `baseline.mcpServers` | object | No | `{}` | Named MCP server configs for Run A |
-| `enhanced` | object | No | `{}` | Enhanced run config |
-| `enhanced.mcpServers` | object | No | `{}` | Additional MCP server configs for Run B |
-| `maxTurns` | number | No | `50` | Max tool-call turns per session |
-| `judge` | object | No | same as main | Judge LLM config |
-| `judge.provider` | string | No | same as main | Judge model provider |
-| `judge.model` | string | No | same as main | Judge model identifier |
+Tasks where Unblocked adds the most value involve **institutional knowledge** — information that lives outside the code:
 
-## Troubleshooting
+- Features requiring understanding of team conventions not documented in code
+- Bug fixes where root cause context is in PR discussions or issue trackers
+- Implementations where prior attempts were rejected (Unblocked surfaces the why)
+- Work touching systems with recent incidents or operational concerns
 
-**"Missing required config field: apiKey"** -- Your `.env.local` file is missing or doesn't have the right key set. Make sure `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is set in `.env.local`.
-
-**"Missing required config field: unblockedToken"** -- Set `UNBLOCKED_API_TOKEN` in `.env.local`.
-
-**"Failed to connect to Unblocked MCP"** -- Check that your Unblocked token in `.env.local` is valid and not expired.
-
-**MCP server connection failure** -- Check the server URL/command, auth headers, and that the server is reachable from your machine. The error message will name which server failed.
-
-**"Command failed with exit code ..."** -- A shell command run by the agent failed. Check the baseline/enhanced transcript files for the full command and output.
-
-**JSON parse error in config file** -- Config files must be valid JSON. Do not include `//` comments.
+Tasks where Unblocked adds less value:
+- Mechanical pattern-copying (e.g., "add a new model to this list")
+- Pure algorithmic work with no team context needed
+- Tasks where the code tells the complete story

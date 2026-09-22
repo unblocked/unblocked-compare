@@ -571,6 +571,11 @@ export async function runExperiment(config: CliConfig): Promise<ExperimentResult
     log(`Total experiment time: ${formatDuration(result.totalDurationMs)}`);
     log(`Total experiment cost: ${formatCost(result.totalCostUsd)}`);
 
+    try {
+      const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+      execSync(`${opener} "${htmlPath}"`);
+    } catch {}
+
     return result;
   } finally {
     unregister?.();

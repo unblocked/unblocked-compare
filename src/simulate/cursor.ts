@@ -146,7 +146,9 @@ export function invokeCursor(opts: AgentInvokeOptions): Promise<AgentResult> {
         processStreamChunk(state.partial + "\n", tag, state, { onResult, onLine, quiet: !streaming });
       }
       if (finalResult) {
-        resolve({ ...parseCursorOutput(finalResult, opts.model, state.turnCount), toolCalls: recorder.calls() });
+        // Count model responses, not text events: a response that only calls
+        // tools emits no assistant text.
+        resolve({ ...parseCursorOutput(finalResult, opts.model, Math.max(state.turnCount, recorder.messages())), toolCalls: recorder.calls() });
       } else {
         resolve(failedResult(`No result event in cursor stream. Exit code: ${code}`));
       }

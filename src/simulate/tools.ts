@@ -40,6 +40,11 @@ export class ToolRecorder {
     for (const e of this.translator.translate(line, Date.now())) this.lines.push(JSON.stringify(e));
   }
 
+  // Model responses in the transcript (for Cursor, one per model_call_id).
+  messages(): number {
+    return parseStreamJson(this.lines.join("\n"), null, true).assistantTurns;
+  }
+
   calls(): SimToolCall[] {
     return parseStreamJson(this.lines.join("\n"), null, true).toolCalls.map(tc => {
       const q = tc.args.query ?? tc.args.url ?? tc.args.urls;

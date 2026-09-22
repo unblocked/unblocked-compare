@@ -16,7 +16,7 @@ criteria: |
   3. Endpoint is registered in the router following existing patterns
 
 # Optional: agent CLI to use (default: claude)
-# agent: claude  # claude | codex | grok | cursor
+# agent: claude  # claude | codex | cursor
 
 # Optional: model overrides (default: sonnet)
 # model: sonnet

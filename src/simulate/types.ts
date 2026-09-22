@@ -33,7 +33,6 @@ export interface AgentResult {
   sessionId: string;
   structuredOutput?: unknown;
   error?: string;
-  // Recorded for Claude Code, Cursor and Codex; Grok's stream has no tool events.
   toolCalls?: SimToolCall[];
 }
 
@@ -132,7 +131,7 @@ export class ContaminationError extends Error {
   }
 }
 
-export type AgentName = "claude" | "codex" | "grok" | "cursor";
+export type AgentName = "claude" | "codex" | "cursor";
 
 export interface CliConfig {
   repo: string;

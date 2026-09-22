@@ -223,7 +223,7 @@ Tasks where Unblocked adds less value:
 - **Baseline arm**: Plan → Review → Implement → Evaluate. The agent works from the task description alone.
 - **Context arm**: Gather Context → Extract Patterns → Plan → Gather Plan Context → Review → Implement → Evaluate + Attribute. A read-only researcher agent first searches the codebase and every connected MCP source (issues, PRs, chat, docs) and writes a context briefing; the agent plans and implements from it. The attribution pass shows which gathered context actually shaped the change.
 
-It is a separate tool from `compare`, with its own agent invokers, prompts and reports (`src/simulate/`); it shares only the price table. Supported agents: `claude` (default), `codex`, `cursor`, `grok`.
+It is a separate tool from `compare`, with its own agent invokers, prompts and reports (`src/simulate/`); it shares only the price table. Supported agents: `claude` (default), `codex`, `cursor`.
 
 Configure the agent's MCP servers for the target repository first (launch the agent in the repo and check they connect): the context arm can only gather what the agent can reach.
 
@@ -252,7 +252,7 @@ bun run simulate \
 | `--task <string>` / `--task-file <path>` | Task description | *(required)* |
 | `--criteria <string>` / `--criteria-file <path>` | Acceptance criteria for scoring; without them, evaluation and attribution are skipped | — |
 | `--context-instructions <string>` / `--context-instructions-file <path>` | Extra instructions for the context-gathering agents | — |
-| `--agent <name>` | `claude`, `codex`, `cursor` or `grok` | `claude` |
+| `--agent <name>` | `claude`, `codex` or `cursor` | `claude` |
 | `--model <model>` | Model for task runs | `sonnet` |
 | `--context-model <model>` | Model for context gathering | same as `--model` |
 | `--eval-model <model>` | Model for evaluation | same as `--model` |
@@ -266,5 +266,5 @@ bun run simulate \
 
 ### Output
 
-`results/experiment-<timestamp>/` with `report.html` (standalone visual report) and `result.json`, plus a comparison table in the terminal: quality score, wall-clock time, cost and tokens per arm and per phase. Grok is subscription-billed and reports no price, so its cost shows as $0.
+`results/experiment-<timestamp>/` with `report.html` (standalone visual report) and `result.json`, plus a comparison table in the terminal: quality score, wall-clock time, cost and tokens per arm and per phase.
 

@@ -3,7 +3,7 @@
 Two tools for measuring what Unblocked adds to a coding agent:
 
 - `bun run compare` (`src/`) — A/B: run a task in a coding agent (Claude Code, Cursor or Codex) with and without the Unblocked tools, then compare results.
-- `bun run simulate` (`src/simulate/`) — context engine simulator: a baseline arm plans and implements from the task alone; a context arm first gathers a context briefing from the codebase and MCP sources. Both are scored against acceptance criteria. Agents: Claude Code, Codex, Cursor, Grok.
+- `bun run simulate` (`src/simulate/`) — context engine simulator: a baseline arm plans and implements from the task alone; a context arm first gathers a context briefing from the codebase and MCP sources. Both are scored against acceptance criteria. Agents: Claude Code, Codex, Cursor.
 
 The two are separate tools: `src/simulate/` has its own agent invokers, prompts and reports and shares only the price table (`src/util.ts`). The sections below cover `compare`, except the `src/simulate/` entry under Architecture; the README's "Context engine simulator" section covers `simulate`.
 
@@ -36,7 +36,7 @@ Binary overrides: `CLAUDE_BINARY` (default `claude`), `CURSOR_BINARY` (default `
 - `src/report.ts` — Console + HTML + JSON comparison reports, batch summary
 - `src/git.ts`, `src/util.ts`, `src/types.ts` — Git helpers, pricing and formatting, shared types
 - `scripts/report_from_jsonl.ts` — Regenerate a report from saved transcripts
-- `src/simulate/` — the simulator: `index.ts` (CLI, YAML fixtures), `runner.ts` (the two chains), `prompts.ts`, one invoker per agent (`claude.ts`, `codex.ts`, `cursor.ts`, `grok.ts`), `report.ts`/`html-report.ts`. Sample fixture: `examples/simulate-fixture.yaml`
+- `src/simulate/` — the simulator: `index.ts` (CLI, YAML fixtures), `runner.ts` (the two chains), `prompts.ts`, one invoker per agent (`claude.ts`, `codex.ts`, `cursor.ts`), `report.ts`/`html-report.ts`. Sample fixture: `examples/simulate-fixture.yaml`
 
 ## Adding an agent
 

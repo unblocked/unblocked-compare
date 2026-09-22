@@ -18,7 +18,7 @@ program
   .option("--criteria-file <path>", "File containing acceptance criteria")
   .option("--context-instructions <string>", "Additional instructions for context collection")
   .option("--context-instructions-file <path>", "File containing context collection instructions")
-  .option("--agent <name>", "Agent CLI to use: claude, codex, grok, cursor", "claude")
+  .option("--agent <name>", "Agent CLI to use: claude, codex, cursor", "claude")
   .option("--model <model>", "Model for task runs", "sonnet")
   .option("--context-model <model>", "Model for context collection (default: same as --model)")
   .option("--eval-model <model>", "Model for evaluation (default: same as --model)")
@@ -114,7 +114,7 @@ function cliOrFixture<T>(optName: string, cliValue: T, fixtureValue: T | undefin
 }
 
 const agent = cliOrFixture("agent", opts.agent, fixture.agent, "claude") as AgentName;
-const validAgents: AgentName[] = ["claude", "codex", "grok", "cursor"];
+const validAgents: AgentName[] = ["claude", "codex", "cursor"];
 if (!validAgents.includes(agent)) {
   console.error(`Error: unknown agent "${agent}". Valid: ${validAgents.join(", ")}`);
   process.exit(1);

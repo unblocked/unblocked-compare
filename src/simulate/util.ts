@@ -30,8 +30,7 @@ export function log(message: string): void {
 
 // Pricing is shared with the compare tool: one rate table for the repo.
 // Only the Codex and Cursor invokers price tokens here (Claude Code reports
-// its own cost; Grok is subscription-billed), and both bill cache writes at
-// the single/5m rate.
+// its own cost), and both bill cache writes at the single/5m rate.
 export function estimateCost(model: string, u: TokenUsageLike): number {
   return costAt(priceFor(model), u, "5m");
 }

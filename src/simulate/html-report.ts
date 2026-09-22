@@ -75,13 +75,13 @@ function toolMs(calls: SimToolCall[]): number {
 
 const isContextSource = (category: string) => category === "Unblocked" || category.startsWith("MCP:");
 
-function buildToolSections(b: BaselineArm, c: ContextEnhancedArm, agent: string): string {
+function buildToolSections(b: BaselineArm, c: ContextEnhancedArm): string {
   const bPhases = baselinePhases(b), cPhases = contextPhases(c);
   if (![...bPhases, ...cPhases].some(p => p.run.toolCalls)) {
     return `
   <div class="section">
     <div class="section-title">Tool Usage Breakdown</div>
-    <div class="section-note">No tool data: ${escapeHtml(agent)}'s output stream does not report tool calls.</div>
+    <div class="section-note">No tool calls were recorded for this run.</div>
   </div>`;
   }
   const bCalls = phasedCalls(bPhases), cCalls = phasedCalls(cPhases);
@@ -982,7 +982,7 @@ export function writeHtmlReport(result: ExperimentResult, experimentDir: string)
   </div>
   ` : ""}
 
-  ${buildToolSections(b, c, result.agent)}
+  ${buildToolSections(b, c)}
 
   <!-- Code Changes: Baseline -->
   <div class="section">

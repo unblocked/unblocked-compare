@@ -7,7 +7,6 @@ import type { AgentInvokeOptions, AgentName, AgentResult, BaselineArm, CliConfig
 import { invokeClaude } from "./claude.ts";
 import { invokeCodex } from "./codex.ts";
 import { invokeCursor } from "./cursor.ts";
-import { invokeGrok } from "./grok.ts";
 import { createWorktree, registerCleanupHandler, removeWorktree, validateGitRepo } from "./worktree.ts";
 import {
   buildBaselinePlanPrompt,
@@ -38,7 +37,7 @@ import { formatCost, formatDuration, log } from "./util.ts";
 
 type Invoker = (opts: AgentInvokeOptions) => Promise<AgentResult>;
 
-const INVOKERS: Record<AgentName, Invoker> = { claude: invokeClaude, codex: invokeCodex, grok: invokeGrok, cursor: invokeCursor };
+const INVOKERS: Record<AgentName, Invoker> = { claude: invokeClaude, codex: invokeCodex, cursor: invokeCursor };
 
 // A failed step still returns a result (empty, $0), so the chain carries on;
 // log why, or the report shows 0ms steps with no explanation.

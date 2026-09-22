@@ -11,6 +11,7 @@ import path from "node:path";
 import { parseStreamJson, type SessionCumulative } from "../src/transcript.ts";
 import { printReport, writeHtmlReport, writeJsonResult } from "../src/report.ts";
 import { estimateCost } from "../src/util.ts";
+import { AGENTS } from "../src/agents/index.ts";
 import { attribute, buildWalk, rollup } from "../src/attribution.ts";
 import { applyTieBreaker, assessQuality } from "../src/quality.ts";
 import { assessImpact } from "../src/impact.ts";
@@ -72,7 +73,7 @@ function arm(condition: Condition, file: string, model: string, orig?: ArmResult
     totalCostUsd: parsed.totalCostUsd,
     ...(parsed.totalCostUsd === null ? { costEstimated: true } : {}),
   };
-  const cost = run.totalCostUsd ?? estimateCost(model, run.tokenUsage);
+  const cost = run.totalCostUsd ?? estimateCost(model, run.tokenUsage, tier);
   return {
     condition, run,
     diff: orig?.diff ?? "(not captured — generated from transcript)",
@@ -92,7 +93,7 @@ function reparseReview(review: NonNullable<ArmResult["review"]>, jsonlPath: stri
     const jsonl = fs.readFileSync(file, "utf8");
     const p = parseStreamJson(jsonl, prior, true);
     prior = p.sessionCumulative;
-    return { costUsd: p.totalCostUsd ?? estimateCost(model, p.tokenUsage), durationMs: durationMs(jsonl), messages: p.assistantTurns };
+    return { costUsd: p.totalCostUsd ?? estimateCost(model, p.tokenUsage, tier), durationMs: durationMs(jsonl), messages: p.assistantTurns };
   };
   const draft = price(path.join(dir, `${stem}.draft.jsonl`));
   if (!draft) return review;
@@ -118,7 +119,8 @@ const orig: ComparisonResult | undefined = thirdArg?.endsWith(".json")
   : undefined;
 const modelArg = orig ? undefined : thirdArg;
 const init = initInfo(fs.readFileSync(baseFile, "utf8"));
-const model = orig?.model ?? modelArg ?? init.model ?? "claude-opus-4-8";
+const model = orig?.model ?? modelArg ?? init.model ?? "claude-opus-5-5";
+const tier = AGENTS[orig?.agent ?? "claude"].cacheWriteTier;
 const branch = orig?.branch ?? branchArg ?? "(not recorded in transcripts)";
 const task = orig?.task ?? (taskArg.join(" ") || "(task not recorded in transcripts)");
 const repo = orig?.repo ?? repoFromCwd(init.cwd) ?? "(from transcripts)";

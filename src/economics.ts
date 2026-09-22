@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import type { ArmResult, ComparisonResult, EconomicsBreakdown, ToolCall } from "./types.ts";
-import { priceFor } from "./util.ts";
+import { cacheWriteRate, priceFor } from "./util.ts";
+import { AGENTS } from "./agents/index.ts";
 import { VERIFY_CMD } from "./analyst.ts";
 
 const isResearch = (name: string, input: Record<string, unknown>) =>
@@ -105,7 +106,7 @@ export function economics(result: ComparisonResult): EconomicsBreakdown {
   const costTerms = {
     output: perM(u.outputTokens - b.outputTokens, price.output),
     cacheRead: perM(u.cacheReadTokens - b.cacheReadTokens, price.cacheRead),
-    cacheWrite: perM(u.cacheWriteTokens - b.cacheWriteTokens, price.cacheWrite1h),
+    cacheWrite: perM(u.cacheWriteTokens - b.cacheWriteTokens, cacheWriteRate(price, AGENTS[result.agent ?? "claude"].cacheWriteTier)),
     input: perM(u.inputTokens - b.inputTokens, price.input),
   };
   const explained = Object.values(costTerms).reduce((s, v) => s + v, 0);

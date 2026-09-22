@@ -142,6 +142,7 @@ export function translator(rename: Map<string, string>): Translator {
 export const cursor: Agent = {
   name: "cursor",
   label: "Cursor",
+  cacheWriteTier: "5m",
   // Cursor keys MCP OAuth tokens to the workspace path
   // (~/.cursor/projects/<path>/mcp-auth.json), so a fresh worktree has none and
   // `agent mcp login` needs a browser.

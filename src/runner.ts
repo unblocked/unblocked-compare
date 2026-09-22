@@ -6,7 +6,7 @@ import type { ArmResult, ComparisonResult, Condition, Config, DiffStats, ReviewP
 import { createWorktree, removeWorktree } from "./worktree.ts";
 import { AGENTS } from "./agents/index.ts";
 import { printReport, writeJsonResult, writeHtmlReport, writeBatchSummary } from "./report.ts";
-import { estimateCost, formatCost, formatDiffSummary, formatDuration, log } from "./util.ts";
+import { estimateCost, formatCost, formatDiffSummary, formatDuration, log, type CacheWriteTier } from "./util.ts";
 import { git, isAncestor, snapshotRefs, tryGit } from "./git.ts";
 import { attribute } from "./attribution.ts";
 import { applyTieBreaker, assessQuality } from "./quality.ts";
@@ -251,7 +251,7 @@ async function runArm(config: Config, condition: Condition, outDir: string, refs
     log(`[${condition}] Review: skipped, the run produced no messages (exit ${run.exitCode})`);
   } else if (config.reviewRounds > 0 && ctx.reviewSpec) {
     const spec = ctx.reviewSpec;
-    const draftCost = run.totalCostUsd ?? estimateCost(pricingModel(config, run), run.tokenUsage);
+    const draftCost = run.totalCostUsd ?? estimateCost(pricingModel(config, run), run.tokenUsage, adapter.cacheWriteTier);
     review = { maxRounds: config.reviewRounds, passes: [], draft: { diffStats, costUsd: draftCost, durationMs: run.durationMs, messages: run.assistantTurns }, finalMergeable: false };
     const draftPath = path.join(outDir, `${condition}.draft.jsonl`);
     fs.copyFileSync(run.jsonlPath, draftPath);
@@ -259,7 +259,7 @@ async function runArm(config: Config, condition: Condition, outDir: string, refs
     const toPass = (round: number, r: NonNullable<Awaited<ReturnType<typeof reviewDraft>>>): ReviewPass =>
       ({ round, reviewModel: r.model, reviewCostUsd: r.costUsd, mergeable: r.mergeable, summary: r.summary, requirements: r.requirements, waiversInForce: r.waiversInForce, before: diffStats, fix: null });
     for (let round = 1; round <= config.reviewRounds; round++) {
-      const armNow: ArmResult = { condition, run, diff, diffStats, unblockedCalls: [], estimatedCost: run.totalCostUsd ?? estimateCost(pricingModel(config, run), run.tokenUsage) };
+      const armNow: ArmResult = { condition, run, diff, diffStats, unblockedCalls: [], estimatedCost: run.totalCostUsd ?? estimateCost(pricingModel(config, run), run.tokenUsage, adapter.cacheWriteTier) };
       const prev = review.passes[review.passes.length - 1] ?? null;
       const r = await reviewDraft(config.task, armNow, config.checkerModel, round, prev, spec, disputed);
       if (!r) { review.checkFailed = round; log(`[${condition}] Review round ${round}: the check itself failed; stopping this arm's loop (recorded, not a verdict on the change)`); break; }
@@ -279,15 +279,15 @@ async function runArm(config: Config, condition: Condition, outDir: string, refs
       fs.appendFileSync(run.jsonlPath, fs.readFileSync(fixRun.jsonlPath, "utf8"));
       disputed = disputedSection(fixRun.finalResponse);
       if (disputed) await adjudicateDisputes(config.task, spec, disputed, condition, round, config.checkerModel);
-      pass.fix = { costUsd: fixRun.totalCostUsd ?? estimateCost(pricingModel(config, run), fixRun.tokenUsage), durationMs: fixRun.durationMs, messages: fixRun.assistantTurns, exitCode: fixRun.exitCode, timedOut: fixRun.timedOut, disputed };
-      run = mergeRuns(run, fixRun, run.jsonlPath, pricingModel(config, run));
+      pass.fix = { costUsd: fixRun.totalCostUsd ?? estimateCost(pricingModel(config, run), fixRun.tokenUsage, adapter.cacheWriteTier), durationMs: fixRun.durationMs, messages: fixRun.assistantTurns, exitCode: fixRun.exitCode, timedOut: fixRun.timedOut, disputed };
+      run = mergeRuns(run, fixRun, run.jsonlPath, pricingModel(config, run), adapter.cacheWriteTier);
       ({ diff, stats: diffStats, agent } = captureDiff(wtPath, baseSha, refsBefore));
       log(`[${condition}] Diff after fix ${round}: ${formatDiffSummary(diffStats)}${disputed ? " (agent disputed part of the review)" : ""}`);
       if (fixRun.killedReason) break;
     }
     const last = review.passes[review.passes.length - 1];
     if (!review.finalMergeable && !review.checkFailed && last?.fix) {
-      const armNow: ArmResult = { condition, run, diff, diffStats, unblockedCalls: [], estimatedCost: run.totalCostUsd ?? estimateCost(pricingModel(config, run), run.tokenUsage) };
+      const armNow: ArmResult = { condition, run, diff, diffStats, unblockedCalls: [], estimatedCost: run.totalCostUsd ?? estimateCost(pricingModel(config, run), run.tokenUsage, adapter.cacheWriteTier) };
       const r = await reviewDraft(config.task, armNow, config.checkerModel, last.round + 1, last, spec, disputed);
       if (r) { review.passes.push(toPass(last.round + 1, r)); review.finalMergeable = r.mergeable; }
       else review.checkFailed = last.round + 1;
@@ -300,7 +300,7 @@ async function runArm(config: Config, condition: Condition, outDir: string, refs
     log(`[${condition}] Unblocked calls: ${unblockedCalls.length}`);
   }
 
-  const cost = run.totalCostUsd ?? estimateCost(pricingModel(config, run), run.tokenUsage);
+  const cost = run.totalCostUsd ?? estimateCost(pricingModel(config, run), run.tokenUsage, adapter.cacheWriteTier);
 
   return { condition, run, diff, diffStats, unblockedCalls, estimatedCost: cost, review };
 }
@@ -313,7 +313,7 @@ function pricingModel(config: Config, run: RunResult): string {
 
 const BASELINE_FIX_PREAMBLE = "IMPORTANT: as before, do NOT use any Unblocked tools, Unblocked skills, or Unblocked CLI commands.\n\n";
 
-function mergeRuns(a: RunResult, b: RunResult, jsonlPath: string, model: string): RunResult {
+function mergeRuns(a: RunResult, b: RunResult, jsonlPath: string, model: string, tier: CacheWriteTier): RunResult {
   const addUsage = (x: TokenUsage, y: TokenUsage): TokenUsage => ({
     inputTokens: x.inputTokens + y.inputTokens, outputTokens: x.outputTokens + y.outputTokens,
     cacheCreationTokens: x.cacheCreationTokens + y.cacheCreationTokens, cacheReadTokens: x.cacheReadTokens + y.cacheReadTokens,
@@ -322,7 +322,7 @@ function mergeRuns(a: RunResult, b: RunResult, jsonlPath: string, model: string)
   });
   const byModel: Record<string, TokenUsage> = { ...(a.tokenUsage.byModel ?? {}) };
   for (const [m, mu] of Object.entries(b.tokenUsage.byModel ?? {})) byModel[m] = byModel[m] ? addUsage(byModel[m], mu) : { ...mu };
-  const costOf = (x: RunResult) => x.totalCostUsd ?? estimateCost(model, x.tokenUsage);
+  const costOf = (x: RunResult) => x.totalCostUsd ?? estimateCost(model, x.tokenUsage, tier);
   const anyEstimated = !!(a.costEstimated || b.costEstimated || a.totalCostUsd === null || b.totalCostUsd === null);
   return {
     durationMs: a.durationMs + b.durationMs,
@@ -398,7 +398,9 @@ export async function run(config: Config, outDirOverride?: string, sharedSpec?: 
     repo: config.repo,
     task: config.task,
     branch: config.branch,
-    model: config.model ?? baseline.run.model ?? unblocked.run.model ?? "(agent default)",
+    // What the agent reports it ran (a full id, not an alias like "opus"), so
+    // the report and the cost breakdown price the right model.
+    model: baseline.run.model ?? unblocked.run.model ?? config.model ?? "(agent default)",
     baseline,
     unblocked,
     totalDurationMs: Math.max(baseline.run.durationMs, unblocked.run.durationMs),

@@ -14,6 +14,7 @@ export const claude: Agent = {
   name: "claude",
   label: "Claude Code",
   defaultModel: "opus",
+  cacheWriteTier: "1h",
 
   // Blocking is per invocation (--disallowed-tools), so the worktree needs nothing.
   prepareWorktree() {},

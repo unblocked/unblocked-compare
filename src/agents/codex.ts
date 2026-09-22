@@ -150,6 +150,8 @@ export function translator(model: string | undefined, rename: Map<string, string
 export const codex: Agent = {
   name: "codex",
   label: "Codex",
+  // OpenAI has one cache-write rate; Codex reports no cache writes anyway.
+  cacheWriteTier: "5m",
 
   // Blocking is per invocation (-c mcp_servers.<name>.enabled=false).
   prepareWorktree() {},

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import type { AgentInvokeOptions, AgentResult } from "./types.js";
-import { ContaminationError } from "./types.js";
-import { estimateCost, log } from "./util.js";
+import type { AgentInvokeOptions, AgentResult } from "./types.ts";
+import { ContaminationError } from "./types.ts";
+import { estimateCost, log } from "./util.ts";
 
 interface CodexItemEvent {
   type: "item.completed";

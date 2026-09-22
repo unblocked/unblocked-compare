@@ -3,12 +3,12 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { randomBytes } from "node:crypto";
-import type { AgentInvokeOptions, AgentName, AgentResult, BaselineArm, CliConfig, ContextAnalysis, ContextAttribution, ContextEnhancedArm, DiffStats, EvalResult, ExperimentResult } from "./types.js";
-import { invokeClaude } from "./claude.js";
-import { invokeCodex } from "./codex.js";
-import { invokeCursor } from "./cursor.js";
-import { invokeGrok } from "./grok.js";
-import { createWorktree, registerCleanupHandler, removeWorktree, validateGitRepo } from "./worktree.js";
+import type { AgentInvokeOptions, AgentName, AgentResult, BaselineArm, CliConfig, ContextAnalysis, ContextAttribution, ContextEnhancedArm, DiffStats, EvalResult, ExperimentResult } from "./types.ts";
+import { invokeClaude } from "./claude.ts";
+import { invokeCodex } from "./codex.ts";
+import { invokeCursor } from "./cursor.ts";
+import { invokeGrok } from "./grok.ts";
+import { createWorktree, registerCleanupHandler, removeWorktree, validateGitRepo } from "./worktree.ts";
 import {
   buildBaselinePlanPrompt,
   buildBaselineReviewPrompt,
@@ -31,20 +31,24 @@ import {
   buildContextAttributionSystemPrompt,
   buildContextAttributionPrompt,
   CONTEXT_ATTRIBUTION_JSON_SCHEMA,
-} from "./prompts.js";
-import { writeHtmlReport } from "./html-report.js";
-import { printReport, writeJsonReport } from "./report.js";
-import { formatCost, formatDuration, log } from "./util.js";
+} from "./prompts.ts";
+import { writeHtmlReport } from "./html-report.ts";
+import { printReport, writeJsonReport } from "./report.ts";
+import { formatCost, formatDuration, log } from "./util.ts";
 
 type Invoker = (opts: AgentInvokeOptions) => Promise<AgentResult>;
 
+const INVOKERS: Record<AgentName, Invoker> = { claude: invokeClaude, codex: invokeCodex, grok: invokeGrok, cursor: invokeCursor };
+
+// A failed step still returns a result (empty, $0), so the chain carries on;
+// log why, or the report shows 0ms steps with no explanation.
 function getInvoker(agent: AgentName): Invoker {
-  switch (agent) {
-    case "claude": return invokeClaude;
-    case "codex": return invokeCodex;
-    case "grok": return invokeGrok;
-    case "cursor": return invokeCursor;
-  }
+  const invoke = INVOKERS[agent];
+  return async (opts) => {
+    const r = await invoke(opts);
+    if (!r.success) log(`[${opts.tag ?? agent}] ✗ step failed: ${(r.error ?? r.result).slice(0, 500) || "(no error message)"}`);
+    return r;
+  };
 }
 
 const READ_ONLY_BLOCKED = ["Edit", "Write", "NotebookEdit", "Agent"];
@@ -55,16 +59,16 @@ function buildAgentEnv(config: CliConfig): Record<string, string> | undefined {
   return undefined;
 }
 
+// Claude Code's own --worktree is not used: a WorktreeCreate hook in the
+// user's settings replaces its worktree creation, and one that returns no path
+// makes every step fail. The harness creates Claude's worktrees itself.
 function agentManagesWorktrees(agent: AgentName): boolean {
-  return agent === "cursor" || agent === "claude";
+  return agent === "cursor";
 }
 
 function resolveAgentWorktreePath(agent: AgentName, repo: string, wtName: string): string {
   if (agent === "cursor") {
     return path.join(os.homedir(), ".cursor", "worktrees", path.basename(repo), wtName);
-  }
-  if (agent === "claude") {
-    return path.join(repo, ".claude", "worktrees", wtName);
   }
   throw new Error(`Agent ${agent} does not manage worktrees`);
 }
@@ -257,7 +261,7 @@ interface WorktreeSetup {
 async function runBaselineChain(invoke: Invoker, config: CliConfig, wt: WorktreeSetup): Promise<BaselineArm> {
   const chainStart = Date.now();
 
-  // 1. Plan — first invocation gets worktree flag (creates it for cursor/claude)
+  // 1. Plan — first invocation gets worktree flag (creates it for cursor)
   log("[baseline] 1/3 Plan...");
   const plan = await invoke({
     prompt: buildBaselinePlanPrompt(config.task),

@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AgentResult, ExperimentResult } from "./types.js";
-import { estimateTokens, formatCost, formatDuration, formatTokens, log, padLeft, padRight } from "./util.js";
+import type { AgentResult, ExperimentResult } from "./types.ts";
+import { estimateTokens, formatCost, formatDuration, formatTokens, log, padLeft, padRight } from "./util.ts";
 
 const W = 80;
 

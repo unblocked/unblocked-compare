@@ -1,6 +1,6 @@
 # Context Engine Simulator — Fixture Format
 #
-# Run with: npx tsx src/index.ts --fixture path/to/fixture.yaml
+# Run with: bun run simulate --fixture examples/simulate-fixture.yaml
 # CLI flags override fixture values when both are provided.
 
 repo: /path/to/target-repo

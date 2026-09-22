@@ -1,14 +1,14 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { program } from "commander";
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
-import type { AgentName, CliConfig } from "./types.js";
-import { runExperiment } from "./runner.js";
-import { getDefaultBranch } from "./worktree.js";
+import type { AgentName, CliConfig } from "./types.ts";
+import { runExperiment } from "./runner.ts";
+import { getDefaultBranch } from "./worktree.ts";
 
 program
-  .name("context-engine-simulator")
+  .name("simulate")
   .description("Test whether pre-gathered context helps a coding agent complete tasks faster and cheaper")
   .option("--fixture <path>", "YAML fixture file with experiment config")
   .option("--repo <path>", "Path to target git repository")

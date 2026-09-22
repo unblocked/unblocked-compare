@@ -1,6 +1,15 @@
 # unblocked-compare
 
-A/B comparison harness for coding agents: runs the same coding task twice in the agent a team already uses — once without [Unblocked](https://getunblocked.com) context (baseline) and once with — then produces structured comparison reports.
+Two tools for measuring what [Unblocked](https://getunblocked.com) adds to the coding agent a team already uses:
+
+| Command | Question it answers |
+|---|---|
+| `bun run compare` | Does the agent do the task better, faster or cheaper **with the Unblocked tools** than without? Same agent, same prompt, one arm can call Unblocked. |
+| `bun run simulate` | Does **pre-gathered context** help? A baseline plans and implements from the task alone; the other arm first runs a research pass that builds a context briefing, then plans and implements from it. Scored against acceptance criteria. See [Context engine simulator](#context-engine-simulator). |
+
+## Compare
+
+A/B comparison harness: runs the same coding task twice in the agent — once without Unblocked context (baseline) and once with — then produces structured comparison reports.
 
 Supported agents (`--agent`):
 
@@ -10,7 +19,7 @@ Supported agents (`--agent`):
 | `cursor` | [Cursor CLI](https://cursor.com/cli) (`agent`) | Cursor's configured default; always `--cli` (see below) |
 | `codex` | [OpenAI Codex CLI](https://github.com/openai/codex) (`codex`) | `model` in `~/.codex/config.toml` |
 
-## How it works
+### How it works
 
 1. Creates two isolated git worktrees from the same branch
 2. Runs the agent in parallel on both:
@@ -26,14 +35,14 @@ Supported agents (`--agent`):
    - **Tie-breaker**: a blinded tie goes to Unblocked only when the impact pass traces a decisive discovery to the research context; the report marks it and keeps the blinded verdict alongside
 6. Generates console, JSON, and HTML reports per comparison, and a batch summary across repeats
 
-## Requirements
+### Requirements
 
 - [Bun](https://bun.sh) runtime
 - The CLI of the agent under test, installed and authenticated: `claude`, `agent` (Cursor) or `codex`
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`) in every case: the requirement check, attribution, quality judge and impact passes run through `claude -p` whatever agent is under test
 - Unblocked configured as an MCP server in the agent under test (`~/.claude.json` or `~/.codex/config.toml`), or the [Unblocked CLI](https://getunblocked.com), authenticated, for `--cli` mode and for Cursor
 
-## Usage
+### Usage
 
 ```bash
 bun start -- --repo /path/to/repo --task "implement feature X"
@@ -43,7 +52,7 @@ bun start -- --agent codex --model gpt-5.5 --repo /path/to/repo --task "implemen
 
 **The defaults run a batch.** `--repeat` defaults to 2, so the command above runs two full comparisons (four agent sessions, two at a time) plus the analysis passes. Pass `--repeat 1` for a single comparison. Each arm's `--timeout` (90 minutes by default) is shared by its draft and all of its fix passes. On macOS the harness runs `caffeinate` so the machine does not sleep mid-run.
 
-### Options
+#### Options
 
 | Flag | Description | Default |
 |------|-------------|---------|
@@ -64,7 +73,7 @@ bun start -- --agent codex --model gpt-5.5 --repo /path/to/repo --task "implemen
 | `--analyst-model <model>` | Model that labels each message as work, verification or housekeeping | `opus` |
 | `--no-attribution` | Skip the attribution pass (currently also skips the judge and impact passes) | attribution on |
 
-### Environment variables
+#### Environment variables
 
 | Variable | Description |
 |----------|-------------|
@@ -74,7 +83,7 @@ bun start -- --agent codex --model gpt-5.5 --repo /path/to/repo --task "implemen
 | `CODEX_HOME` | Codex config directory, read for the default model and the Unblocked server name (default: `~/.codex`) |
 | `HARNESS_DEBUG_DIR` | Directory to write the raw CLI output of every analysis call (checker, judge, analyst, impact) |
 
-### Examples
+#### Examples
 
 A reviewed batch of three comparisons:
 
@@ -99,7 +108,7 @@ bun start -- \
 
 If the base branch is behind its upstream the harness warns at start: when the task's fix has already landed upstream, both arms find it and the comparison measures something else.
 
-### Regenerating a report
+#### Regenerating a report
 
 Reports can be rebuilt from saved transcripts after a parser or report change, with no agent runs:
 
@@ -109,7 +118,7 @@ bun scripts/report_from_jsonl.ts <baseline.jsonl> <unblocked.jsonl> <result.json
 
 Tokens, cost, time and tool calls are always re-parsed from the transcripts. The task, branch, diffs, review record, analyst labels, verdict and impact are carried over from `result.json`. The flags re-run the corresponding model pass (they cost money; without them the regeneration is free). Output goes to `results/regenerated/` under the current directory. Without a `result.json`, pass `[model] [branch] [task]` instead; diffs are then unavailable.
 
-## Output
+### Output
 
 A batch (`--repeat` 2 or more) writes to `results/batch-<timestamp>-<id>/`:
 
@@ -143,7 +152,7 @@ The HTML report opens automatically and includes:
 
 A run that was killed (contamination, no research call, timeout, or an API error such as a session limit) gets no verdict and is left out of the batch tally and medians.
 
-## Architecture
+### Architecture
 
 ```
 src/
@@ -171,7 +180,7 @@ scripts/
 └── report_from_jsonl.ts   Regenerate a report from saved transcripts
 ```
 
-### Canonical transcript
+#### Canonical transcript
 
 Every analysis pass reads Claude Code's stream-json. The Cursor and Codex adapters translate as they stream:
 
@@ -180,20 +189,20 @@ Every analysis pass reads Claude Code's stream-json. The Cursor and Codex adapte
 - Time: Cursor events carry timestamps. Codex events don't, so arrival time stands in.
 - Tokens: Cursor and Codex report totals per session only, not per message, so per-message cost and output in the attribution are apportioned (the report marks per-message output as estimated). Codex's `input_tokens` includes cached tokens; they are split out. Neither reports cost, so cost is tokens × the list price in `src/util.ts`.
 
-### Contamination guards
+#### Contamination guards
 
 - **Baseline arm**: Unblocked MCP tools and CLI blocked via `--disallowed-tools`. If the baseline somehow calls Unblocked, the run is killed immediately.
 - **Unblocked arm**: If Unblocked isn't called within 120 seconds, the run is killed (ensures the nudge prompt worked).
 - A killed arm voids the comparison: no quality verdict or impact pass is run for it.
 
-### How blocking works
+#### How blocking works
 
 - **Claude Code**: the baseline passes a separate `--disallowed-tools` flag for each Unblocked MCP tool and the `Bash(unblocked *)` pattern, so the tools are absent rather than refused.
 - **Cursor**: runs in CLI mode only. Cursor keeps MCP OAuth tokens per workspace path (`~/.cursor/projects/<path>/mcp-auth.json`), so the Unblocked MCP server is unauthenticated in a fresh worktree, and `agent mcp login` needs a browser. MCP enablement is also per workspace. Each arm runs in its own fresh worktree, where the harness runs `agent mcp disable <server>` (baseline) or `agent mcp enable <server>` (Unblocked arm) before the first run. The arms stay parallel and your own workspaces are untouched. Unblocked servers are found by name or URL in `~/.cursor/mcp.json` and the repo's `.cursor/mcp.json`.
 - **Codex**: the baseline passes `-c mcp_servers.<server>.enabled=false` for each Unblocked server in `~/.codex/config.toml`.
 - In every case the Unblocked CLI stays on the baseline's PATH. The prompt forbids it and the contamination guard kills the run if it is used.
 
-## Tips for good comparison tasks
+### Tips for good comparison tasks
 
 Tasks where Unblocked adds the most value involve **institutional knowledge** — information that lives outside the code:
 
@@ -206,3 +215,56 @@ Tasks where Unblocked adds less value:
 - Mechanical pattern-copying (e.g., "add a new model to this list")
 - Pure algorithmic work with no team context needed
 - Tasks where the code tells the complete story
+
+## Context engine simulator
+
+`bun run simulate` runs the same task twice against a real repository, in parallel worktrees, and scores both results 0–100 against your acceptance criteria:
+
+- **Baseline arm**: Plan → Review → Implement → Evaluate. The agent works from the task description alone.
+- **Context arm**: Gather Context → Extract Patterns → Plan → Gather Plan Context → Review → Implement → Evaluate + Attribute. A read-only researcher agent first searches the codebase and every connected MCP source (issues, PRs, chat, docs) and writes a context briefing; the agent plans and implements from it. The attribution pass shows which gathered context actually shaped the change.
+
+It is a separate tool from `compare`, with its own agent invokers, prompts and reports (`src/simulate/`); it shares only the price table. Supported agents: `claude` (default), `codex`, `cursor`, `grok`.
+
+Configure the agent's MCP servers for the target repository first (launch the agent in the repo and check they connect): the context arm can only gather what the agent can reach.
+
+### Usage
+
+With a YAML fixture (see [`examples/simulate-fixture.yaml`](examples/simulate-fixture.yaml)):
+
+```bash
+bun run simulate --fixture my-experiment.yaml --verbose
+```
+
+Or with flags, which override fixture values:
+
+```bash
+bun run simulate \
+  --repo /path/to/repo \
+  --task "Add a /health endpoint returning service name and timestamp" \
+  --criteria "GET /health returns 200 JSON with service and timestamp fields" \
+  --agent claude --model opus
+```
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--fixture <path>` | YAML fixture file | — |
+| `--repo <path>` | Target git repository | *(required)* |
+| `--task <string>` / `--task-file <path>` | Task description | *(required)* |
+| `--criteria <string>` / `--criteria-file <path>` | Acceptance criteria for scoring; without them, evaluation and attribution are skipped | — |
+| `--context-instructions <string>` / `--context-instructions-file <path>` | Extra instructions for the context-gathering agents | — |
+| `--agent <name>` | `claude`, `codex`, `cursor` or `grok` | `claude` |
+| `--model <model>` | Model for task runs | `sonnet` |
+| `--context-model <model>` | Model for context gathering | same as `--model` |
+| `--eval-model <model>` | Model for evaluation | same as `--model` |
+| `--timeout <seconds>` | Max seconds per task step | `3600` |
+| `--context-timeout <seconds>` | Max seconds per context step | `600` |
+| `--branch <name>` | Branch to base worktrees on | default branch |
+| `--api-url <url>` | Custom API base URL for Claude (`ANTHROPIC_BASE_URL`) | — |
+| `--disable-mcp <servers...>` | MCP servers to block in both arms; a call to one aborts the run | — |
+| `--keep-worktrees` | Keep worktrees after the run | `false` |
+| `--verbose` | Stream agent activity live | `false` |
+
+### Output
+
+`results/experiment-<timestamp>/` with `report.html` (standalone visual report) and `result.json`, plus a comparison table in the terminal: quality score, wall-clock time, cost and tokens per arm and per phase. Grok is subscription-billed and reports no price, so its cost shows as $0.
+

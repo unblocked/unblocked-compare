@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import type { WorktreeInfo } from "./types.js";
+import type { WorktreeInfo } from "./types.ts";
 
 const WORKTREE_PREFIX = "ces";
 

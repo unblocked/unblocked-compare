@@ -1,3 +1,5 @@
+import { costAt, priceFor, type TokenUsageLike } from "../util.ts";
+
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const totalSeconds = Math.round(ms / 1000);
@@ -26,53 +28,12 @@ export function log(message: string): void {
   process.stderr.write(`[${timestamp}] ${message}\n`);
 }
 
-export interface TokenUsageLike {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheCreationTokens: number;
-}
-
-// Per-token pricing ($/M tokens) — from cursor.com/docs/models-and-pricing and provider docs
-const PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
-  "claude-fable-5": { input: 10, output: 50, cacheRead: 1.00, cacheWrite: 12.50 },
-  "claude-sonnet-4-6": { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75 },
-  "claude-sonnet-4-5": { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75 },
-  "claude-opus-4-7": { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25 },
-  "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.10, cacheWrite: 1.25 },
-  "gpt-5.4": { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 2.5 },
-  "gpt-5.4-mini": { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0.75 },
-  "gpt-4o": { input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 2.5 },
-  "gpt-4.1": { input: 2, output: 8, cacheRead: 0.50, cacheWrite: 2 },
-  "o3": { input: 10, output: 40, cacheRead: 2.50, cacheWrite: 10 },
-  "auto": { input: 1.25, output: 6, cacheRead: 0.25, cacheWrite: 1.25 },
-  "sonnet": { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75 },
-  "opus": { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25 },
-  "haiku": { input: 1, output: 5, cacheRead: 0.10, cacheWrite: 1.25 },
-};
-
-const warnedModels = new Set<string>();
-
-function matchPricing(model: string): { input: number; output: number; cacheRead: number; cacheWrite: number } {
-  if (PRICING[model]) return PRICING[model];
-  const m = model.toLowerCase();
-  if (m.includes("fable")) return PRICING["claude-fable-5"];
-  if (m.includes("opus")) return PRICING["opus"];
-  if (m.includes("haiku")) return PRICING["haiku"];
-  if (m.includes("sonnet")) return PRICING["sonnet"];
-  if (!warnedModels.has(model)) {
-    warnedModels.add(model);
-    log(`No pricing for model "${model}" — estimating cost at default (sonnet) rates.`);
-  }
-  return PRICING["sonnet"];
-}
-
+// Pricing is shared with the compare tool: one rate table for the repo.
+// Only the Codex and Cursor invokers price tokens here (Claude Code reports
+// its own cost; Grok is subscription-billed), and both bill cache writes at
+// the single/5m rate.
 export function estimateCost(model: string, u: TokenUsageLike): number {
-  const p = matchPricing(model);
-  return (u.inputTokens / 1_000_000) * p.input
-    + (u.outputTokens / 1_000_000) * p.output
-    + (u.cacheReadTokens / 1_000_000) * p.cacheRead
-    + (u.cacheCreationTokens / 1_000_000) * p.cacheWrite;
+  return costAt(priceFor(model), u, "5m");
 }
 
 export function padRight(str: string, width: number): string {

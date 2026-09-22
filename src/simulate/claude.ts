@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import type { AgentInvokeOptions, ClaudeRawOutput, AgentResult } from "./types.js";
-import { ContaminationError } from "./types.js";
-import { createStreamState, processStreamChunk } from "./stream.js";
+import type { AgentInvokeOptions, ClaudeRawOutput, AgentResult } from "./types.ts";
+import { ContaminationError } from "./types.ts";
+import { createStreamState, processStreamChunk } from "./stream.ts";
 
 function parseClaudeOutput(raw: ClaudeRawOutput): AgentResult {
   return {

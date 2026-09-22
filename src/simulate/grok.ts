@@ -3,8 +3,8 @@ import { writeFileSync, unlinkSync, readFileSync, existsSync, readdirSync } from
 import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { randomBytes } from "node:crypto";
-import type { AgentInvokeOptions, AgentResult } from "./types.js";
-import { log } from "./util.js";
+import type { AgentInvokeOptions, AgentResult } from "./types.ts";
+import { log } from "./util.ts";
 
 // Grok exposes no per-turn usage in its stdout. Its session dir's signals.json
 // records `contextTokensUsed` — the real peak context-window token count (input

@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
-import type { AgentInvokeOptions, AgentResult } from "./types.js";
-import { ContaminationError } from "./types.js";
-import { createStreamState, processStreamChunk } from "./stream.js";
-import { estimateCost } from "./util.js";
+import type { AgentInvokeOptions, AgentResult } from "./types.ts";
+import { ContaminationError } from "./types.ts";
+import { createStreamState, processStreamChunk } from "./stream.ts";
+import { estimateCost } from "./util.ts";
 
 interface CursorRawOutput {
   type: "result";

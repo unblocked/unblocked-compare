@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { AgentResult, ContextAttribution, ExperimentResult } from "./types.js";
-import { estimateTokens, formatCost, formatDuration, formatTokens } from "./util.js";
+import type { AgentResult, ContextAttribution, ExperimentResult } from "./types.ts";
+import { estimateTokens, formatCost, formatDuration, formatTokens } from "./util.ts";
 
 function pctChange(baseline: number, enhanced: number): string {
   if (baseline === 0) return "N/A";

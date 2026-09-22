@@ -1,4 +1,4 @@
-import { log } from "./util.js";
+import { log } from "./util.ts";
 
 export interface StreamState {
   turnCount: number;

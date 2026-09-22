@@ -1,12 +1,13 @@
 {
   "name": "unblocked-compare",
   "version": "0.1.0",
-  "description": "A/B comparison: a coding agent (Claude Code, Cursor or Codex) with vs without Unblocked context",
+  "description": "Measure what Unblocked adds to coding agents (Claude Code, Cursor, Codex): an A/B compare tool and a context-engine simulator",
   "type": "module",
   "license": "MIT",
   "scripts": {
     "start": "bun src/index.ts",
     "compare": "bun src/index.ts",
+    "simulate": "bun src/simulate/index.ts",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test"
   },

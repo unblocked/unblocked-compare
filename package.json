@@ -11,7 +11,8 @@
     "test": "bun test"
   },
   "dependencies": {
-    "commander": "^13.0.0"
+    "commander": "^13.0.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/bun": "^1.2.0",

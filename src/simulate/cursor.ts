@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import type { AgentInvokeOptions, AgentResult } from "./types.ts";
 import { ContaminationError } from "./types.ts";
 import { createStreamState, processStreamChunk } from "./stream.ts";
+import { ToolRecorder } from "./tools.ts";
 import { estimateCost } from "./util.ts";
 
 interface CursorRawOutput {
@@ -59,12 +60,12 @@ function failedResult(error: string): AgentResult {
 }
 
 export function invokeCursor(opts: AgentInvokeOptions): Promise<AgentResult> {
+  // Always stream: the tool recorder and the contamination check read the
+  // events. --verbose only decides whether agent activity is logged.
   const streaming = opts.verbose ?? false;
-  const hasBannedServers = (opts.bannedMcpServers?.length ?? 0) > 0;
-  const useStreaming = streaming || hasBannedServers;
   const args: string[] = [
     "-p",
-    "--output-format", useStreaming ? "stream-json" : "json",
+    "--output-format", "stream-json",
     "--trust",
     "--approve-mcps",
     "--workspace", opts.cwd,
@@ -107,67 +108,49 @@ export function invokeCursor(opts: AgentInvokeOptions): Promise<AgentResult> {
       setTimeout(() => child.kill("SIGKILL"), 5000).unref();
     }, opts.timeoutMs);
 
-    if (useStreaming) {
-      const tag = opts.tag ?? "cursor";
-      const state = createStreamState();
-      let finalResult: CursorRawOutput | null = null;
-      let contaminated = false;
+    const tag = opts.tag ?? "cursor";
+    const state = createStreamState();
+    const recorder = new ToolRecorder("cursor");
+    let finalResult: CursorRawOutput | null = null;
+    let contaminated = false;
+    const onResult = (e: Record<string, unknown>) => { finalResult = e as unknown as CursorRawOutput; };
+    const onLine = (line: string) => recorder.feed(line);
 
-      child.stdout.on("data", (chunk: Buffer) => {
-        if (contaminated) return;
-        processStreamChunk(chunk.toString(), tag, state, {
-          onResult: (e) => { finalResult = e as unknown as CursorRawOutput; },
-          bannedMcpServers: opts.bannedMcpServers,
-          onContamination: (server, detail) => {
-            if (contaminated) return;
-            contaminated = true;
-            child.kill("SIGTERM");
-            clearTimeout(timer);
-            reject(new ContaminationError(server, detail));
-          },
-        });
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (contaminated) return;
+      processStreamChunk(chunk.toString(), tag, state, {
+        onResult,
+        onLine,
+        quiet: !streaming,
+        bannedMcpServers: opts.bannedMcpServers,
+        onContamination: (server, detail) => {
+          if (contaminated) return;
+          contaminated = true;
+          child.kill("SIGTERM");
+          clearTimeout(timer);
+          reject(new ContaminationError(server, detail));
+        },
       });
+    });
 
-      child.stderr.on("data", (d: Buffer) => {
-        if (streaming) process.stderr.write(`[${tag}:stderr] ${d}`);
-      });
+    child.stderr.on("data", (d: Buffer) => {
+      if (streaming) process.stderr.write(`[${tag}:stderr] ${d}`);
+    });
 
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        if (contaminated) return;
-        // Flush any trailing line not terminated by a newline (the result event
-        // can arrive without a final \n before the stream closes).
-        if (state.partial) {
-          processStreamChunk(state.partial + "\n", tag, state, {
-            onResult: (e) => { finalResult = e as unknown as CursorRawOutput; },
-          });
-        }
-        if (finalResult) {
-          resolve(parseCursorOutput(finalResult, opts.model, state.turnCount));
-        } else {
-          resolve(failedResult(`No result event in cursor stream. Exit code: ${code}`));
-        }
-      });
-    } else {
-      let stdout = "";
-      let stderr = "";
-      child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
-      child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
-
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        try {
-          const raw: CursorRawOutput = JSON.parse(stdout);
-          resolve(parseCursorOutput(raw, opts.model));
-        } catch {
-          resolve(
-            failedResult(
-              `Failed to parse cursor output. Exit code: ${code}. stderr: ${stderr.slice(0, 500)}. stdout: ${stdout.slice(0, 500)}`,
-            ),
-          );
-        }
-      });
-    }
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (contaminated) return;
+      // Flush any trailing line not terminated by a newline (the result event
+      // can arrive without a final \n before the stream closes).
+      if (state.partial) {
+        processStreamChunk(state.partial + "\n", tag, state, { onResult, onLine, quiet: !streaming });
+      }
+      if (finalResult) {
+        resolve({ ...parseCursorOutput(finalResult, opts.model, state.turnCount), toolCalls: recorder.calls() });
+      } else {
+        resolve(failedResult(`No result event in cursor stream. Exit code: ${code}`));
+      }
+    });
 
     child.on("error", (err) => {
       clearTimeout(timer);

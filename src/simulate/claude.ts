@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import type { AgentInvokeOptions, ClaudeRawOutput, AgentResult } from "./types.ts";
 import { ContaminationError } from "./types.ts";
 import { createStreamState, processStreamChunk } from "./stream.ts";
+import { ToolRecorder } from "./tools.ts";
 
 function parseClaudeOutput(raw: ClaudeRawOutput): AgentResult {
   return {
@@ -36,14 +37,10 @@ function failedResult(error: string): AgentResult {
 }
 
 export function invokeClaude(opts: AgentInvokeOptions): Promise<AgentResult> {
+  // Always stream: the tool recorder and the contamination check read the
+  // events. --verbose only decides whether agent activity is logged.
   const streaming = opts.verbose ?? false;
-  const hasBannedServers = (opts.bannedMcpServers?.length ?? 0) > 0;
-  const useStreaming = streaming || hasBannedServers;
-  const args: string[] = ["-p", "--output-format", useStreaming ? "stream-json" : "json", "--model", opts.model];
-
-  if (useStreaming) {
-    args.push("--verbose");
-  }
+  const args: string[] = ["-p", "--output-format", "stream-json", "--verbose", "--model", opts.model];
 
   if (opts.worktree) {
     args.push("--worktree", opts.worktree);
@@ -98,71 +95,51 @@ export function invokeClaude(opts: AgentInvokeOptions): Promise<AgentResult> {
     child.stdin.write(opts.prompt);
     child.stdin.end();
 
-    if (useStreaming) {
-      const tag = opts.tag ?? "claude";
-      const state = createStreamState();
-      let finalResult: ClaudeRawOutput | null = null;
-      let contaminated = false;
+    const tag = opts.tag ?? "claude";
+    const state = createStreamState();
+    const recorder = new ToolRecorder("claude");
+    let finalResult: ClaudeRawOutput | null = null;
+    let contaminated = false;
+    const onResult = (e: Record<string, unknown>) => { finalResult = e as unknown as ClaudeRawOutput; };
+    const onLine = (line: string) => recorder.feed(line);
 
-      child.stdout.on("data", (chunk: Buffer) => {
-        if (contaminated) return;
-        processStreamChunk(chunk.toString(), tag, state, {
-          onResult: (e) => { finalResult = e as unknown as ClaudeRawOutput; },
-          bannedMcpServers: opts.bannedMcpServers,
-          onContamination: (server, detail) => {
-            if (contaminated) return;
-            contaminated = true;
-            child.kill("SIGTERM");
-            clearTimeout(timer);
-            reject(new ContaminationError(server, detail));
-          },
-        });
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (contaminated) return;
+      processStreamChunk(chunk.toString(), tag, state, {
+        onResult,
+        onLine,
+        quiet: !streaming,
+        bannedMcpServers: opts.bannedMcpServers,
+        onContamination: (server, detail) => {
+          if (contaminated) return;
+          contaminated = true;
+          child.kill("SIGTERM");
+          clearTimeout(timer);
+          reject(new ContaminationError(server, detail));
+        },
       });
+    });
 
-      child.stderr.on("data", (d: Buffer) => {
-        if (streaming) process.stderr.write(`[${tag}:stderr] ${d}`);
-      });
+    child.stderr.on("data", (d: Buffer) => {
+      if (streaming) process.stderr.write(`[${tag}:stderr] ${d}`);
+    });
 
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        if (contaminated) return;
-        if (state.partial) {
-          processStreamChunk(state.partial + "\n", tag, state, {
-            onResult: (e) => { finalResult = e as unknown as ClaudeRawOutput; },
-          });
-        }
-        if (finalResult) {
-          resolve(parseClaudeOutput(finalResult));
-        } else {
-          resolve(failedResult(
-            timedOut
-              ? `Timed out after ${opts.timeoutMs}ms before emitting a result.`
-              : `No result event in stream. Exit code: ${code}`,
-          ));
-        }
-      });
-    } else {
-      let stdout = "";
-      let stderr = "";
-      child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
-      child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
-
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        try {
-          const raw: ClaudeRawOutput = JSON.parse(stdout);
-          resolve(parseClaudeOutput(raw));
-        } catch {
-          resolve(
-            failedResult(
-              timedOut
-                ? `Timed out after ${opts.timeoutMs}ms. Exit code: ${code}.`
-                : `Failed to parse claude output. Exit code: ${code}. stderr: ${stderr.slice(0, 500)}. stdout: ${stdout.slice(0, 500)}`
-            )
-          );
-        }
-      });
-    }
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (contaminated) return;
+      if (state.partial) {
+        processStreamChunk(state.partial + "\n", tag, state, { onResult, onLine, quiet: !streaming });
+      }
+      if (finalResult) {
+        resolve({ ...parseClaudeOutput(finalResult), toolCalls: recorder.calls() });
+      } else {
+        resolve(failedResult(
+          timedOut
+            ? `Timed out after ${opts.timeoutMs}ms before emitting a result.`
+            : `No result event in stream. Exit code: ${code}`,
+        ));
+      }
+    });
 
     child.on("error", (err) => {
       clearTimeout(timer);

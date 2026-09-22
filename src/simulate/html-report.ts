@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { AgentResult, ContextAttribution, ExperimentResult } from "./types.ts";
+import type { AgentResult, BaselineArm, ContextAttribution, ContextEnhancedArm, ExperimentResult } from "./types.ts";
+import type { SimToolCall } from "./tools.ts";
 import { estimateTokens, formatCost, formatDuration, formatTokens } from "./util.ts";
 
 function pctChange(baseline: number, enhanced: number): string {
@@ -19,7 +20,24 @@ function barWidth(value: number, max: number): number {
   return max === 0 ? 0 : Math.round((value / max) * 100);
 }
 
-function phaseRows(phases: { label: string; run: AgentResult; isContext?: boolean }[]): string {
+interface Phase { label: string; run: AgentResult; isContext?: boolean }
+
+const baselinePhases = (b: BaselineArm): Phase[] => [
+  { label: "Plan", run: b.planRun },
+  { label: "Review", run: b.reviewRun },
+  { label: "Implement", run: b.implementRun },
+];
+
+const contextPhases = (c: ContextEnhancedArm): Phase[] => [
+  { label: "Initial Context", run: c.initialContextRun, isContext: true },
+  { label: "Pattern Extraction", run: c.patternExtractionRun, isContext: true },
+  { label: "Plan", run: c.planRun },
+  { label: "Plan Context", run: c.planContextRun, isContext: true },
+  { label: "Review", run: c.reviewRun },
+  { label: "Implement", run: c.implementRun },
+];
+
+function phaseRows(phases: Phase[]): string {
   return phases.map(({ label, run, isContext }) => `
     <tr class="${isContext ? "context-phase" : ""}">
       <td>${isContext ? `<span class="ctx-badge">CTX</span> ` : ""}${label}</td>
@@ -27,8 +45,132 @@ function phaseRows(phases: { label: string; run: AgentResult; isContext?: boolea
       <td>${formatCost(run.costUsd)}</td>
       <td>${isContext ? "~" + formatTokens(estimateTokens(run.result)) : formatTokens(run.outputTokens)}</td>
       <td>${run.numTurns}</td>
+      <td>${run.toolCalls ? run.toolCalls.length : "&ndash;"}</td>
     </tr>
   `).join("");
+}
+
+// ── Tool usage, as in the compare report ─────────────────────────────────
+
+interface PhasedCall extends SimToolCall { phase: string; gathering: boolean }
+
+function phasedCalls(phases: Phase[]): PhasedCall[] {
+  return phases.flatMap(p => (p.run.toolCalls ?? []).map(tc => ({ ...tc, phase: p.label, gathering: !!p.isContext })));
+}
+
+// Wall time spent in tools: the union of call spans, so parallel calls count once.
+function toolMs(calls: SimToolCall[]): number {
+  const spans = calls
+    .filter(tc => tc.startedAt && (tc.durationMs ?? 0) > 0)
+    .map(tc => [tc.startedAt!, tc.startedAt! + tc.durationMs!] as [number, number])
+    .sort((x, y) => x[0] - y[0]);
+  let total = 0, curStart = -1, curEnd = -1;
+  for (const [st, en] of spans) {
+    if (st > curEnd) { if (curEnd > curStart) total += curEnd - curStart; curStart = st; curEnd = en; }
+    else if (en > curEnd) curEnd = en;
+  }
+  if (curEnd > curStart) total += curEnd - curStart;
+  return total;
+}
+
+const isContextSource = (category: string) => category === "Unblocked" || category.startsWith("MCP:");
+
+function buildToolSections(b: BaselineArm, c: ContextEnhancedArm, agent: string): string {
+  const bPhases = baselinePhases(b), cPhases = contextPhases(c);
+  if (![...bPhases, ...cPhases].some(p => p.run.toolCalls)) {
+    return `
+  <div class="section">
+    <div class="section-title">Tool Usage Breakdown</div>
+    <div class="section-note">No tool data: ${escapeHtml(agent)}'s output stream does not report tool calls.</div>
+  </div>`;
+  }
+  const bCalls = phasedCalls(bPhases), cCalls = phasedCalls(cPhases);
+  const byCat = (calls: PhasedCall[]) => {
+    const m = new Map<string, PhasedCall[]>();
+    for (const tc of calls) m.set(tc.category, [...(m.get(tc.category) ?? []), tc]);
+    return m;
+  };
+  const bCat = byCat(bCalls), cCat = byCat(cCalls);
+  const cats = [...new Set([...bCat.keys(), ...cCat.keys()])]
+    .sort((x, y) => ((cCat.get(y)?.length ?? 0) + (bCat.get(y)?.length ?? 0)) - ((cCat.get(x)?.length ?? 0) + (bCat.get(x)?.length ?? 0)));
+  const time = (calls?: PhasedCall[]) => { const ms = toolMs(calls ?? []); return ms > 0 ? formatDuration(ms) : "&ndash;"; };
+  const rows = cats.map(cat => {
+    const bn = bCat.get(cat)?.length ?? 0, cn = cCat.get(cat)?.length ?? 0;
+    const gathering = cCat.get(cat)?.filter(tc => tc.gathering).length ?? 0;
+    return `
+      <tr class="${isContextSource(cat) ? "highlight-row" : ""}">
+        <td>${escapeHtml(cat)}</td>
+        <td>${bn}</td>
+        <td>${cn}</td>
+        <td>${gathering || "&ndash;"}</td>
+        <td>${cn - bn >= 0 ? "+" : ""}${cn - bn}</td>
+        <td>${time(bCat.get(cat))}</td>
+        <td>${time(cCat.get(cat))}</td>
+      </tr>`;
+  }).join("");
+  const total = `
+      <tr class="total-row">
+        <td>Total</td><td>${bCalls.length}</td><td>${cCalls.length}</td>
+        <td>${cCalls.filter(tc => tc.gathering).length}</td>
+        <td>${cCalls.length - bCalls.length >= 0 ? "+" : ""}${cCalls.length - bCalls.length}</td>
+        <td>${time(bCalls)}</td><td>${time(cCalls)}</td>
+      </tr>`;
+
+  const slowest = (calls: PhasedCall[]) => [...calls]
+    .filter(tc => (tc.durationMs ?? 0) > 0)
+    .sort((x, y) => (y.durationMs ?? 0) - (x.durationMs ?? 0))
+    .slice(0, 5)
+    .map(tc => `
+      <tr>
+        <td>${formatDuration(tc.durationMs ?? 0)}</td>
+        <td><span class="phase-tag${tc.gathering ? " ctx" : ""}">${escapeHtml(tc.phase)}</span></td>
+        <td class="mono">${escapeHtml(tc.label)}</td>
+      </tr>`).join("") || `<tr><td colspan="3" style="color: var(--text-muted);">No timed tool calls</td></tr>`;
+
+  const queries = (calls: PhasedCall[]) => calls.filter(tc => tc.isMcp).map(tc => `
+      <div class="query-card">
+        <span class="query-tool">${escapeHtml(`${tc.mcpServer ?? "mcp"}/${tc.name.split(/__|::/).pop() ?? tc.name}`)}</span>
+        <span class="phase-tag${tc.gathering ? " ctx" : ""}">${escapeHtml(tc.phase)}</span>
+        ${tc.query ? `<span class="query-text">${escapeHtml(tc.query.slice(0, 200))}</span>` : ""}
+      </div>`).join("");
+  const cQueries = queries(cCalls), bQueries = queries(bCalls);
+
+  return `
+  <div class="section">
+    <div class="section-title">Tool Usage Breakdown</div>
+    <div class="section-note">Tool calls across each arm's steps (evaluation excluded). "In gathering" counts the context arm's calls made during its context steps. Time is wall time inside tools; parallel calls count once.</div>
+    <div class="tool-table-wrap">
+      <table class="tool-table">
+        <thead><tr><th>Tool</th><th>Baseline</th><th>Context+</th><th>In gathering</th><th>Delta</th><th>Baseline time</th><th>Context+ time</th></tr></thead>
+        <tbody>${rows}${total}</tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Slowest Tool Calls</div>
+    <div class="two-col">
+      <div class="tool-table-wrap">
+        <table class="tool-table">
+          <thead><tr><th colspan="3">Baseline</th></tr></thead>
+          <tbody>${slowest(bCalls)}</tbody>
+        </table>
+      </div>
+      <div class="tool-table-wrap">
+        <table class="tool-table">
+          <thead><tr><th colspan="3">Context-Enhanced</th></tr></thead>
+          <tbody>${slowest(cCalls)}</tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  ${cQueries || bQueries ? `
+  <div class="section">
+    <div class="section-title">MCP Queries</div>
+    ${cQueries ? `<div class="query-arm">Context-Enhanced</div><div class="query-grid">${cQueries}</div>` : ""}
+    ${bQueries ? `<div class="query-arm">Baseline</div><div class="query-grid">${bQueries}</div>` : ""}
+  </div>` : ""}`;
 }
 
 function buildAttributionSection(attributions?: ContextAttribution[]): string {
@@ -583,7 +725,28 @@ export function writeHtmlReport(result: ExperimentResult, experimentDir: string)
   .diff-summary .diff-added { color: var(--green); font-weight: 600; }
   .diff-summary .diff-removed { color: var(--red); font-weight: 600; }
 
+  /* Tool usage sections, as in the compare report */
+  .section-note { font-size: 13px; color: var(--text-muted); margin: -8px 0 16px; line-height: 1.6; }
+  .tool-table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
+  .tool-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .tool-table th { text-align: left; padding: 10px 16px; font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
+  .tool-table td { padding: 10px 16px; border-bottom: 1px solid rgba(42, 42, 58, 0.5); }
+  .tool-table tr:last-child td { border-bottom: none; }
+  .tool-table td.mono { font-family: 'SF Mono', 'Fira Code', Consolas, monospace; font-size: 12px; word-break: break-all; }
+  .highlight-row td { background: rgba(124, 58, 237, 0.08); font-weight: 600; }
+  .total-row td { font-weight: 600; border-top: 1px solid var(--border); }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .phase-tag { display: inline-block; font-size: 11px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; white-space: nowrap; }
+  .phase-tag.ctx { color: var(--accent-light); border-color: rgba(124, 58, 237, 0.3); background: var(--accent-glow); }
+  .query-arm { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 16px 0 8px; }
+  .query-grid { display: flex; flex-direction: column; gap: 8px; }
+  .query-card { display: flex; align-items: baseline; gap: 12px; background: var(--surface); border: 1px solid rgba(124, 58, 237, 0.2); border-radius: 10px; padding: 12px 16px; }
+  .query-tool { font-family: 'SF Mono', 'Fira Code', Consolas, monospace; font-size: 12px; font-weight: 600; color: var(--accent-light); background: var(--accent-glow); border: 1px solid rgba(124, 58, 237, 0.3); border-radius: 6px; padding: 2px 8px; white-space: nowrap; }
+  .query-text { font-size: 13px; color: var(--text-muted); }
+
   @media (max-width: 768px) {
+    .two-col { grid-template-columns: 1fr; }
+    .query-card { flex-wrap: wrap; }
     .hero-grid { grid-template-columns: 1fr; }
     .score-comparison { grid-template-columns: 1fr; }
     .score-arrow { transform: rotate(90deg); text-align: center; }
@@ -766,20 +929,16 @@ export function writeHtmlReport(result: ExperimentResult, experimentDir: string)
       </div>
       <table class="phase-table">
         <thead>
-          <tr><th>Phase</th><th>Time</th><th>Cost</th><th>Tokens</th><th>Turns</th></tr>
+          <tr><th>Phase</th><th>Time</th><th>Cost</th><th>Tokens</th><th>Turns</th><th>Tools</th></tr>
         </thead>
         <tbody>
-          ${phaseRows([
-            { label: "Plan", run: b.planRun },
-            { label: "Review", run: b.reviewRun },
-            { label: "Implement", run: b.implementRun },
-          ])}
+          ${phaseRows(baselinePhases(b))}
           ${b.evaluation ? `
           <tr style="color: var(--text-muted)">
             <td>Eval</td>
             <td>${formatDuration(b.evaluation.claudeResult.durationMs)}</td>
             <td>${formatCost(b.evaluation.claudeResult.costUsd)}</td>
-            <td></td><td></td>
+            <td></td><td></td><td></td>
           </tr>` : ""}
         </tbody>
       </table>
@@ -792,23 +951,16 @@ export function writeHtmlReport(result: ExperimentResult, experimentDir: string)
       </div>
       <table class="phase-table">
         <thead>
-          <tr><th>Phase</th><th>Time</th><th>Cost</th><th>Tokens</th><th>Turns</th></tr>
+          <tr><th>Phase</th><th>Time</th><th>Cost</th><th>Tokens</th><th>Turns</th><th>Tools</th></tr>
         </thead>
         <tbody>
-          ${phaseRows([
-            { label: "Initial Context", run: c.initialContextRun, isContext: true },
-            { label: "Pattern Extraction", run: c.patternExtractionRun, isContext: true },
-            { label: "Plan", run: c.planRun },
-            { label: "Plan Context", run: c.planContextRun, isContext: true },
-            { label: "Review", run: c.reviewRun },
-            { label: "Implement", run: c.implementRun },
-          ])}
+          ${phaseRows(contextPhases(c))}
           ${c.evaluation ? `
           <tr style="color: var(--text-muted)">
             <td>Eval</td>
             <td>${formatDuration(c.evaluation.claudeResult.durationMs)}</td>
             <td>${formatCost(c.evaluation.claudeResult.costUsd)}</td>
-            <td></td><td></td>
+            <td></td><td></td><td></td>
           </tr>` : ""}
         </tbody>
       </table>
@@ -829,6 +981,8 @@ export function writeHtmlReport(result: ExperimentResult, experimentDir: string)
     </div>
   </div>
   ` : ""}
+
+  ${buildToolSections(b, c, result.agent)}
 
   <!-- Code Changes: Baseline -->
   <div class="section">

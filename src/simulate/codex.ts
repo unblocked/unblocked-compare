@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import type { AgentInvokeOptions, AgentResult } from "./types.ts";
 import { ContaminationError } from "./types.ts";
 import { estimateCost, log } from "./util.ts";
+import { ToolRecorder } from "./tools.ts";
 
 interface CodexItemEvent {
   type: "item.completed";
@@ -127,6 +128,7 @@ export function invokeCodex(opts: AgentInvokeOptions): Promise<AgentResult> {
     let numTurns = 0;
     let partial = "";
     let contaminated = false;
+    const recorder = new ToolRecorder("codex");
 
     child.stdout.on("data", (chunk: Buffer) => {
       partial += chunk.toString();
@@ -135,6 +137,7 @@ export function invokeCodex(opts: AgentInvokeOptions): Promise<AgentResult> {
 
       for (const line of lines) {
         if (!line) continue;
+        recorder.feed(line);
         try {
           const event = JSON.parse(line) as CodexEvent;
           if (event.type === "thread.started") {
@@ -205,6 +208,7 @@ export function invokeCodex(opts: AgentInvokeOptions): Promise<AgentResult> {
         cacheCreationTokens: 0,
         numTurns: numTurns || (timedOut && text ? 1 : 0),
         sessionId,
+        toolCalls: recorder.calls(),
       });
     });
 

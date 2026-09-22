@@ -211,7 +211,10 @@ async function runEvaluation(invoke: Invoker, config: CliConfig, agentOutput: st
     }
   }
 
-  return { score: parsed.score, reasoning: parsed.reasoning, claudeResult: result };
+  // The model sometimes leaks its tool-call markup (</reasoning></invoke>)
+  // into the reasoning field; drop trailing closing tags.
+  const reasoning = parsed.reasoning.replace(/(\s*<\/[\w:-]+>)+\s*$/, "").trim();
+  return { score: parsed.score, reasoning, claudeResult: result };
 }
 
 async function runContextAttribution(

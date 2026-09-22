@@ -1,3 +1,5 @@
+import type { SimToolCall } from "./tools.ts";
+
 export interface ClaudeRawOutput {
   type: "result";
   subtype: string;
@@ -31,6 +33,8 @@ export interface AgentResult {
   sessionId: string;
   structuredOutput?: unknown;
   error?: string;
+  // Recorded for Claude Code, Cursor and Codex; Grok's stream has no tool events.
+  toolCalls?: SimToolCall[];
 }
 
 export interface AgentInvokeOptions {

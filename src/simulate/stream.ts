@@ -124,6 +124,10 @@ export function handleStreamEvent(e: Record<string, unknown>, tag: string, state
 
 export interface StreamOptions {
   onResult?: (e: Record<string, unknown>) => void;
+  // Every complete stdout line, before parsing (for the tool recorder).
+  onLine?: (line: string) => void;
+  // Parse and record, but do not log agent activity (non-verbose runs).
+  quiet?: boolean;
   onContamination?: (server: string, detail: string) => void;
   bannedMcpServers?: string[];
 }
@@ -153,6 +157,7 @@ export function processStreamChunk(chunk: string, tag: string, state: StreamStat
   state.partial = lines.pop() ?? "";
   for (const line of lines) {
     if (!line) continue;
+    opts?.onLine?.(line);
     try {
       const e = JSON.parse(line) as Record<string, unknown>;
       if (e.type === "result" && opts?.onResult) {
@@ -165,7 +170,11 @@ export function processStreamChunk(chunk: string, tag: string, state: StreamStat
             opts.onContamination?.(hit.server, hit.detail);
           }
         }
-        handleStreamEvent(e, tag, state);
+        if (opts?.quiet) {
+          if (e.type === "assistant") state.turnCount++;
+        } else {
+          handleStreamEvent(e, tag, state);
+        }
       }
     } catch { /* skip non-JSON */ }
   }

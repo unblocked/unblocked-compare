@@ -190,7 +190,8 @@ export async function assessQuality(result: ComparisonResult, model: string): Pr
   const raw = res.data;
 
   const pick = <T>(row: { A: T; B: T }, c: Condition): T => (cond("A") === c ? row.A : row.B);
-  const nameOf = (l: "A" | "B") => (cond(l) === "baseline" ? "Baseline" : "Unblocked");
+  const treatment = result.contextEngine === "simulated" ? "Simulated Context" : "Unblocked";
+  const nameOf = (l: "A" | "B") => (cond(l) === "baseline" ? "Baseline" : treatment);
   const unblind = (t: string) => t.replace(/\b[Aa]gent ([AB])\b/g, (_, l: "A" | "B") => nameOf(l));
   const ub = <T extends Record<string, unknown>>(o: T): T => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, typeof v === "string" ? unblind(v) : v])) as T;
   const q: QualityAssessment = {

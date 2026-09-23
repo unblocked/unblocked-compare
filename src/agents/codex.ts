@@ -162,9 +162,11 @@ export const codex: Agent = {
     const model = opts.model ?? configuredModel(toml);
     const off = opts.blockUnblocked || opts.cliMode ? servers.flatMap(n => ["-c", `mcp_servers.${n}.enabled=false`]) : [];
     const common = ["--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", ...(opts.model ? ["-m", opts.model] : []), ...off];
+    // Codex has no system-prompt flag; research instructions lead the prompt.
+    const prompt = opts.appendSystemPrompt ? `${opts.appendSystemPrompt}\n\n---\n\n${opts.prompt}` : opts.prompt;
     const args = opts.resumeSessionId
-      ? ["exec", "resume", ...common, opts.resumeSessionId, opts.prompt]
-      : ["exec", ...common, "-C", opts.worktreePath, opts.prompt];
+      ? ["exec", "resume", ...common, opts.resumeSessionId, prompt]
+      : ["exec", ...common, "-C", opts.worktreePath, prompt];
     const rename = new Map(servers.map(n => [n, "unblocked"]));
     return runSession({ ...opts, model, binary: BINARY, args, translator: translator(model, rename), keepRaw: true });
   },

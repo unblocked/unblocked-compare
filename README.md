@@ -5,7 +5,7 @@ Two tools for measuring what [Unblocked](https://getunblocked.com) adds to the c
 | Command | Question it answers |
 |---|---|
 | `bun run compare` | Does the agent do the task better, faster or cheaper **with the Unblocked tools** than without? Same agent, same prompt, one arm can call Unblocked. |
-| `bun run simulate` | Does **pre-gathered context** help? A baseline plans and implements from the task alone; the other arm first runs a research pass that builds a context briefing, then plans and implements from it. Scored against acceptance criteria. See [Context engine simulator](#context-engine-simulator). |
+| `bun run simulate` | The same comparison, with Unblocked replaced by a **simulated context engine**: a local research agent with the team's MCP servers answers each `unblocked context-research` call. See [Context engine simulator](#context-engine-simulator). |
 
 ## Compare
 
@@ -218,21 +218,23 @@ Tasks where Unblocked adds less value:
 
 ## Context engine simulator
 
-`bun run simulate` runs the same task twice against a real repository, in parallel worktrees, and scores both results 0–100 against your acceptance criteria:
+`bun run simulate` is a `compare` run in which the Unblocked arm talks to a **simulated context engine** instead of the real service. Everything else is the harness above: parallel worktrees, identical prompts for both arms, contamination guards, the optional review loop, attribution, the blinded judge, the impact pass and the reports. The only difference between the arms is whether `unblocked context-research` returns anything.
 
-- **Baseline arm**: Plan → Review → Implement → Evaluate. The agent works from the task description alone.
-- **Context arm**: Gather Context → Extract Patterns → Plan → Gather Plan Context → Review → Implement → Evaluate + Attribute. A read-only researcher agent first searches the codebase and every connected MCP source (issues, PRs, chat, docs) and writes a context briefing; the agent plans and implements from it. The attribution pass shows which gathered context actually shaped the change.
+How the simulated engine works:
 
-It is a separate tool from `compare`, with its own agent invokers, prompts and reports (`src/simulate/`); it shares only the price table. Supported agents: `claude` (default), `codex`, `cursor`.
+- The Unblocked arm runs in CLI mode, with a shim for `unblocked` first on its PATH (`src/engine/`). Both arms keep all their MCP servers; only the real Unblocked is blocked.
+- Each `unblocked context-research` (or `context-get-urls`) call starts a research agent: the **same agent CLI** as the arm (Claude Code, Cursor or Codex), with its MCP servers minus Unblocked, told not to edit anything. It runs in the original repository so its MCP logins apply there, searches code, git history, `gh` and every MCP source, and prints results in Unblocked's format (`**Title**` / `**URL**` items separated by `---`).
+- Each call's time and cost is logged. The report shows them in a **Simulated context engine** section, separate from the arm's own cost, since the engine stands in for the service. Transcripts are kept under `unblocked/engine/`.
+- Because a research pass takes minutes rather than seconds, the Unblocked arm's prompt tells the agent to allow for it.
 
-Configure the agent's MCP servers for the target repository first (launch the agent in the repo and check they connect): the context arm can only gather what the agent can reach.
+Configure the agent's MCP servers for the target repository first (launch the agent in the repo and check they connect): the engine can only find what the agent can reach from there.
 
 ### Usage
 
 With a YAML fixture (see [`examples/simulate-fixture.yaml`](examples/simulate-fixture.yaml)):
 
 ```bash
-bun run simulate --fixture my-experiment.yaml --verbose
+bun run simulate --fixture my-experiment.yaml
 ```
 
 Or with flags, which override fixture values:
@@ -250,21 +252,16 @@ bun run simulate \
 | `--fixture <path>` | YAML fixture file | — |
 | `--repo <path>` | Target git repository | *(required)* |
 | `--task <string>` / `--task-file <path>` | Task description | *(required)* |
-| `--criteria <string>` / `--criteria-file <path>` | Acceptance criteria for scoring; without them, evaluation and attribution are skipped | — |
-| `--context-instructions <string>` / `--context-instructions-file <path>` | Extra instructions for the context-gathering agents | — |
-| `--agent <name>` | `claude`, `codex` or `cursor` | `claude` |
-| `--model <model>` | Model for task runs | `sonnet` |
-| `--context-model <model>` | Model for context gathering | same as `--model` |
-| `--eval-model <model>` | Model for evaluation | same as `--model` |
-| `--timeout <seconds>` | Max seconds per task step | `3600` |
-| `--context-timeout <seconds>` | Max seconds per context step | `600` |
-| `--branch <name>` | Branch to base worktrees on | default branch |
-| `--api-url <url>` | Custom API base URL for Claude (`ANTHROPIC_BASE_URL`) | — |
-| `--disable-mcp <servers...>` | MCP servers to block in both arms; a call to one aborts the run | — |
-| `--keep-worktrees` | Keep worktrees after the run | `false` |
-| `--verbose` | Stream agent activity live | `false` |
+| `--criteria <string>` / `--criteria-file <path>` | Acceptance criteria; they become the requirement list the checker and judge use | — |
+| `--context-instructions <string>` / `--context-instructions-file <path>` | Extra instructions for every research call | — |
+| `--agent <name>` | `claude`, `codex` or `cursor`: the agent under test and the research agent | `claude` |
+| `--model <model>` | Model for the agent | `opus` for claude; the CLI's default otherwise |
+| `--context-model <model>` | Model for the research agent | same as `--model` |
+| `--context-timeout <seconds>` | Max seconds per research call | `300` |
+| `--timeout <seconds>` | Max seconds per arm | `5400` |
+| `--repeat <n>` | Comparisons to run | `1` |
+| `--review`, `--max-review-rounds`, `--branch`, `--keep-worktrees`, `--concurrency`, `--judge-model`, `--checker-model`, `--analyst-model`, `--no-attribution` | As for `compare` | |
 
 ### Output
 
-`results/experiment-<timestamp>/` with `report.html` (standalone visual report) and `result.json`, plus a comparison table in the terminal: quality score, wall-clock time, cost and tokens per arm and per phase.
-
+The same as `compare` (`results/run-*` or `results/batch-*`, opened in the browser when done), with the simulated engine's calls in the report and the console summary.

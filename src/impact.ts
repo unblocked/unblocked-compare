@@ -105,7 +105,7 @@ ${rc.items.map((it, i) => `  [${i + 1}] ${it.title} (${it.chars} chars)\n      $
 Requirements: ${q.requirements.map(r => `"${r.requirement}" baseline=${r.baseline.status}, unblocked=${r.unblocked.status}`).join("; ")}
 Findings: ${q.findings.map(f => `(${f.arm}) ${f.finding}`).join(" | ")}` : "(no quality verdict available)";
 
-  return `Two autonomous coding agents did the same task in identical copies of one repository. The UNBLOCKED agent had a research tool (Unblocked) that searches the organisation's PRs, docs, chat, issues and other repositories; the BASELINE agent did not, but could use anything else, including the enterprise GitHub API. A blinded judge has already compared their outputs. Your job is un-blinded and narrow: what did the research context actually do?
+  return `Two autonomous coding agents did the same task in identical copies of one repository. The UNBLOCKED agent had a research tool (${result.contextEngine === "simulated" ? "a context engine" : "Unblocked"}) that searches the organisation's PRs, docs, chat, issues and other repositories; the BASELINE agent did not, but could use anything else, including the enterprise GitHub API. A blinded judge has already compared their outputs. Your job is un-blinded and narrow: what did the research context actually do?
 
 Answer with evidence from the material below. Keep every string short; this goes on a one-page report.
 1. research: for each research call — items returned, which items the UNBLOCKED agent actually used (cited, acted on in code, or followed up) and for what (each "use" ≤ 12 words), and its value: decisive, useful, unused, or misleading (led to a wrong conclusion, including a confident "nothing found"). note ≤ 15 words.

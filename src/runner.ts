@@ -5,6 +5,7 @@ import path from "node:path";
 import type { ArmResult, ComparisonResult, Condition, Config, DiffStats, ReviewPass, ReviewRound, ReviewSpec, RunResult, TokenUsage, UnblockedCall } from "./types.ts";
 import { createWorktree, removeWorktree } from "./worktree.ts";
 import { AGENTS } from "./agents/index.ts";
+import { engineEnv, readEngineCalls } from "./engine/shim.ts";
 import { printReport, writeJsonResult, writeHtmlReport, writeBatchSummary } from "./report.ts";
 import { estimateCost, formatCost, formatDiffSummary, formatDuration, log, type CacheWriteTier } from "./util.ts";
 import { git, isAncestor, snapshotRefs, tryGit } from "./git.ts";
@@ -212,7 +213,12 @@ async function runArm(config: Config, condition: Condition, outDir: string, refs
   } else {
     nudge = UNBLOCKED_MCP_NUDGE;
   }
+  if (condition === "unblocked" && config.contextEngine) nudge = simulatedEngineNote(config.contextEngine.timeoutSeconds) + nudge;
   const prompt = nudge + config.task;
+  // Simulated context engine: this arm's `unblocked` is the local research agent.
+  const env = condition === "unblocked" && config.contextEngine
+    ? engineEnv({ armOutDir: outDir, agent: config.agent, model: config.model, repo: config.repo, engine: config.contextEngine })
+    : undefined;
 
   const suffix = randomBytes(4).toString("hex");
   const wtName = `${condition}-${suffix}`;
@@ -237,6 +243,7 @@ async function runArm(config: Config, condition: Condition, outDir: string, refs
     outDir,
     blockUnblocked: condition === "baseline",
     cliMode: config.cliMode,
+    env,
   });
   spentMs += runResult.durationMs;
   log(`[${condition}] Done: ${formatDuration(runResult.durationMs)}, ${runResult.assistantTurns} turns, exit=${runResult.exitCode}${runResult.timedOut ? " (TIMED OUT)" : ""}${runResult.killedReason && !runResult.timedOut ? ` (killed: ${runResult.killedReason})` : ""}`);
@@ -272,7 +279,7 @@ async function runArm(config: Config, condition: Condition, outDir: string, refs
       const fixRun = await adapter.run({
         prompt: (condition === "baseline" ? BASELINE_FIX_PREAMBLE : "") + fixPrompt(round, r),
         worktreePath: wtPath, model: config.model, condition, timeoutMs: remainingMs(), outDir,
-        blockUnblocked: condition === "baseline", cliMode: config.cliMode, resumeSessionId: run.sessionId, priorTranscriptPath: run.jsonlPath, jsonlName: `${condition}.fix${round}.jsonl`,
+        blockUnblocked: condition === "baseline", cliMode: config.cliMode, env, resumeSessionId: run.sessionId, priorTranscriptPath: run.jsonlPath, jsonlName: `${condition}.fix${round}.jsonl`,
       });
       spentMs += fixRun.durationMs;
       log(`[${condition}] Fix pass ${round} done: ${formatDuration(fixRun.durationMs)}, ${fixRun.assistantTurns} msgs, exit=${fixRun.exitCode}${fixRun.killedReason ? ` (killed: ${fixRun.killedReason})` : ""}`);
@@ -301,14 +308,27 @@ async function runArm(config: Config, condition: Condition, outDir: string, refs
   }
 
   const cost = run.totalCostUsd ?? estimateCost(pricingModel(config, run), run.tokenUsage, adapter.cacheWriteTier);
+  const contextEngine = env ? readEngineCalls(outDir) : undefined;
+  if (contextEngine) log(`[${condition}] Context engine: ${contextEngine.calls.length} research call(s), ${formatCost(contextEngine.costUsd)}, ${formatDuration(contextEngine.durationMs)}${contextEngine.calls.some(c => c.repoModified) ? " — ⚠ a research call modified the repository" : ""}`);
 
-  return { condition, run, diff, diffStats, unblockedCalls, estimatedCost: cost, review };
+  return { condition, run, diff, diffStats, unblockedCalls, estimatedCost: cost, review, ...(contextEngine ? { contextEngine } : {}) };
 }
 
 // The model to price a run at when the agent reports no cost of its own: the
 // model the agent says it ran, else the one it was told to run.
 function pricingModel(config: Config, run: RunResult): string {
   return run.model ?? config.model ?? "";
+}
+
+// The simulated engine does a full research pass per call, far slower than
+// the real service; say so, or agents kill it at their shell's default timeout.
+function simulatedEngineNote(timeoutSeconds: number): string {
+  return `NOTE: \`unblocked context-research\` runs a full research pass and can take up to ${Math.ceil(timeoutSeconds / 60)} minutes. Give the command a timeout of at least ${Math.ceil(timeoutSeconds / 60) + 1} minutes and wait for it to finish.\n\n`;
+}
+
+// Requirements come from the task, plus the acceptance criteria when given.
+function specSource(config: Config): string {
+  return config.criteria ? `${config.task}\n\nAcceptance criteria:\n${config.criteria}` : config.task;
 }
 
 const BASELINE_FIX_PREAMBLE = "IMPORTANT: as before, do NOT use any Unblocked tools, Unblocked skills, or Unblocked CLI commands.\n\n";
@@ -358,8 +378,8 @@ export async function run(config: Config, outDirOverride?: string, sharedSpec?: 
   if (!refsBefore) throw new Error("Could not snapshot the repository's refs; without it the agent's commits cannot be told from existing history");
   warnIfBehindUpstream(config.repo, config.branch);
   keepMachineAwake();
-  if (config.reviewRounds > 0) {
-    ctx.reviewSpec = sharedSpec ? { ...sharedSpec, adjudications: [], costUsd: 0 } : await extractRequirements(config.task, config.checkerModel);
+  if (config.reviewRounds > 0 || config.criteria) {
+    ctx.reviewSpec = sharedSpec ? { ...sharedSpec, adjudications: [], costUsd: 0 } : await extractRequirements(specSource(config), config.checkerModel);
     if (!ctx.reviewSpec) throw new Error("Review: could not extract the task's requirements; not running the arms without a shared review standard");
   }
   const reviewSpec = ctx.reviewSpec;
@@ -395,6 +415,8 @@ export async function run(config: Config, outDirOverride?: string, sharedSpec?: 
 
   const result: ComparisonResult = {
     agent: config.agent,
+    ...(config.contextEngine ? { contextEngine: "simulated" as const } : {}),
+    ...(config.criteria ? { criteria: config.criteria } : {}),
     repo: config.repo,
     task: config.task,
     branch: config.branch,
@@ -453,8 +475,8 @@ export async function runBatch(config: Config): Promise<{ batchDir: string; resu
   fs.mkdirSync(batchDir, { recursive: true });
   log(`Batch: ${config.repeat} repeats, ${config.concurrency} at a time → ${batchDir}`);
   let sharedSpec: ReviewSpec | undefined;
-  if (config.reviewRounds > 0) {
-    const spec = await extractRequirements(config.task, config.checkerModel);
+  if (config.reviewRounds > 0 || config.criteria) {
+    const spec = await extractRequirements(specSource(config), config.checkerModel);
     if (!spec) throw new Error("Review: could not extract the task's requirements; not running the batch without a shared review standard");
     sharedSpec = spec;
     fs.writeFileSync(path.join(batchDir, "requirements.json"), JSON.stringify(spec, null, 2));

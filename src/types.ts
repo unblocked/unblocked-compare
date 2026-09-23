@@ -1,4 +1,5 @@
 import type { AgentName } from "./agents/types.ts";
+import type { ContextEngineConfig, EngineSummary } from "./engine/shim.ts";
 
 export interface TokenUsage {
   inputTokens: number;
@@ -210,10 +211,15 @@ export interface ArmResult {
   estimatedCost: number;
   attribution?: Attribution;
   review?: ReviewRound;
+  // Simulated context engine: the research calls behind this arm's `unblocked`.
+  contextEngine?: EngineSummary;
 }
 
 export interface ComparisonResult {
   agent?: AgentName;
+  // "simulated": the Unblocked arm's `unblocked` CLI was the simulated engine.
+  contextEngine?: "unblocked" | "simulated";
+  criteria?: string;
   repo: string;
   task: string;
   branch: string;
@@ -235,6 +241,11 @@ export interface Config {
   task: string;
   // Undefined: the agent CLI's own configured default.
   model?: string;
+  // Acceptance criteria: with them, the requirement list comes from task +
+  // criteria and is used by the checker and judge even without --review.
+  criteria?: string;
+  // Set: the Unblocked arm uses the simulated context engine (implies CLI mode).
+  contextEngine?: ContextEngineConfig;
   timeoutSeconds: number;
   branch: string;
   keepWorktrees: boolean;

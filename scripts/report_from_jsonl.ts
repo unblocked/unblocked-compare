@@ -82,6 +82,7 @@ function arm(condition: Condition, file: string, model: string, orig?: ArmResult
     estimatedCost: cost,
     attribution: orig?.attribution,
     review: orig?.review ? reparseReview(orig.review, file, model) : undefined,
+    ...(orig?.contextEngine ? { contextEngine: orig.contextEngine } : {}),
   };
 }
 
@@ -140,6 +141,8 @@ for (const a of [baseline, unblocked]) {
 
 const result: ComparisonResult = {
   ...(orig?.agent ? { agent: orig.agent } : {}),
+  ...(orig?.contextEngine ? { contextEngine: orig.contextEngine } : {}),
+  ...(orig?.criteria ? { criteria: orig.criteria } : {}),
   repo,
   task,
   branch,

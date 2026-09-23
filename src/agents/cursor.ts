@@ -175,7 +175,8 @@ export const cursor: Agent = {
       "--workspace", opts.worktreePath,
       ...(opts.model ? ["--model", opts.model] : []),
       ...(opts.resumeSessionId ? ["--resume", opts.resumeSessionId] : []),
-      opts.prompt,
+      // Cursor has no system-prompt flag; research instructions lead the prompt.
+      opts.appendSystemPrompt ? `${opts.appendSystemPrompt}\n\n---\n\n${opts.prompt}` : opts.prompt,
     ];
     return runSession({ ...opts, binary: BINARY, args, translator: translator(rename), keepRaw: true });
   },

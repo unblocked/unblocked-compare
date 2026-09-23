@@ -205,7 +205,22 @@ interface RunContext {
   reviewSpec: ReviewSpec | null;
 }
 
-async function runArm(config: Config, condition: Condition, outDir: string, refsBefore: Map<string, string> | null, ctx: RunContext): Promise<ArmResult> {
+interface ArmWorktree { name: string; path: string; baseSha: string }
+
+// Worktree creation is synchronous and can take a minute on a large repo
+// (submodules). Creating both before either arm starts keeps one arm's
+// setup from stalling the other's event loop mid-run.
+function prepareArmWorktree(config: Config, condition: Condition, ctx: RunContext): ArmWorktree {
+  const name = `${condition}-${randomBytes(4).toString("hex")}`;
+  log(`[${condition}] Creating worktree: ${name}`);
+  const { path: wtPath, baseSha } = createWorktree(config.repo, name, config.branch);
+  ctx.worktreeByArm.set(condition, name);
+  log(`[${condition}] Worktree at: ${wtPath} (base ${baseSha.slice(0, 7)})`);
+  AGENTS[config.agent].prepareWorktree(wtPath, condition, config.cliMode);
+  return { name, path: wtPath, baseSha };
+}
+
+async function runArm(config: Config, condition: Condition, outDir: string, refsBefore: Map<string, string> | null, ctx: RunContext, wt: ArmWorktree): Promise<ArmResult> {
   let nudge: string;
   if (condition === "baseline") {
     nudge = BASELINE_NUDGE;
@@ -224,15 +239,8 @@ async function runArm(config: Config, condition: Condition, outDir: string, refs
   if (engine && config.contextEngine) nudge = simulatedEngineNote(config.contextEngine.timeoutSeconds, engine.command) + nudge.replaceAll("\nunblocked context-research", `\n${engine.command} context-research`);
   const prompt = nudge + config.task;
 
-  const suffix = randomBytes(4).toString("hex");
-  const wtName = `${condition}-${suffix}`;
-
-  log(`[${condition}] Creating worktree: ${wtName}`);
-  const { path: wtPath, baseSha } = createWorktree(config.repo, wtName, config.branch);
-  ctx.worktreeByArm.set(condition, wtName);
-  log(`[${condition}] Worktree at: ${wtPath} (base ${baseSha.slice(0, 7)})`);
+  const { path: wtPath, baseSha } = wt;
   const adapter = AGENTS[config.agent];
-  adapter.prepareWorktree(wtPath, condition, config.cliMode);
 
   let spentMs = 0;
   const remainingMs = () => Math.max(60_000, config.timeoutSeconds * 1000 - spentMs);
@@ -396,9 +404,11 @@ export async function run(config: Config, outDirOverride?: string, sharedSpec?: 
   let unblocked: ArmResult;
 
   try {
+    const baselineWt = prepareArmWorktree(config, "baseline", ctx);
+    const unblockedWt = prepareArmWorktree(config, "unblocked", ctx);
     [baseline, unblocked] = await Promise.all([
-      runArm(config, "baseline", baselineDir, refsBefore, ctx),
-      runArm(config, "unblocked", unblockedDir, refsBefore, ctx),
+      runArm(config, "baseline", baselineDir, refsBefore, ctx, baselineWt),
+      runArm(config, "unblocked", unblockedDir, refsBefore, ctx, unblockedWt),
     ]);
   } finally {
     if (!config.keepWorktrees) {

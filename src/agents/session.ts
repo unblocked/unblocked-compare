@@ -6,6 +6,7 @@ import type { RunResult } from "../types.ts";
 import { log } from "../util.ts";
 import { parseStreamJson, parseToolName } from "../transcript.ts";
 import type { AgentRunOpts } from "./types.ts";
+import { unblockedCommand } from "../unblocked-cli.ts";
 
 // Turns one line of the agent CLI's stdout into zero or more canonical
 // (Claude Code stream-json) events. `receivedMs` is when the line arrived, for
@@ -25,7 +26,7 @@ interface ContentBlock { type: string; text?: string; name?: string; input?: Rec
 
 function isUnblockedCall(name: string, input: Record<string, unknown>): boolean {
   if (name.toLowerCase().includes("unblocked")) return true;
-  return name === "Bash" && /^unblocked\s+context[_-]/.test((input.command as string) ?? "");
+  return name === "Bash" && !!unblockedCommand((input.command as string) ?? "");
 }
 
 function toolLabel(toolName: string, input: Record<string, unknown>, editCount: number): string {
@@ -122,6 +123,11 @@ export async function runSession(opts: AgentRunOpts & {
           if (opts.condition === "baseline" && !killed && ub) {
             log(`[${tag}] ⛔ CONTAMINATION: baseline called Unblocked — killing run`);
             kill("contamination: the baseline called Unblocked");
+          }
+          const cli = block.name === "Bash" ? unblockedCommand(String(input.command ?? "")) : null;
+          if (opts.engineCommand && cli && `${cli.path}unblocked` !== opts.engineCommand && !killed) {
+            log(`[${tag}] ⛔ CONTAMINATION: the simulated arm called the real Unblocked CLI (${cli.path || "bare "}unblocked) — killing run`);
+            kill("contamination: the simulated arm called the real Unblocked CLI instead of the simulated engine");
           }
           if (opts.condition === "unblocked" && !unblockedCallSeen && ub) {
             unblockedCallSeen = true;

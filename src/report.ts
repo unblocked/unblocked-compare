@@ -4,6 +4,7 @@ import type { ArmResult, ComparisonResult, Met, ToolCall } from "./types.ts";
 import { formatCost, formatDiffSummary, formatDuration, formatTokens, modelCost, padLeft, padRight, priceFor, totalTokens, uncachedTokens } from "./util.ts";
 import { AGENTS, type AgentName } from "./agents/index.ts";
 import type { TokenUsage } from "./types.ts";
+import { unblockedCommand } from "./unblocked-cli.ts";
 
 const W = 78;
 
@@ -50,7 +51,7 @@ function toolCategory(tc: ToolCall): string {
   }
   if (tc.name === "Bash") {
     const cmd = (tc.args.command as string) ?? "";
-    if (/^unblocked\s+/.test(cmd)) return "Unblocked";
+    if (unblockedCommand(cmd)) return "Unblocked";
     return bashWritesFiles(cmd) ? "Bash (writes files)" : "Bash";
   }
   return tc.name;

@@ -13,6 +13,7 @@ import path from "node:path";
 import { AGENTS, type AgentName } from "../agents/index.ts";
 import { estimateCost } from "../util.ts";
 import { fetchUrlsPrompt, researchPrompt, researchSystemPrompt } from "./prompt.ts";
+import { parseArgs } from "./args.ts";
 import type { EngineCall } from "./shim.ts";
 
 const env = (name: string) => process.env[`UC_ENGINE_${name}`] ?? "";
@@ -32,31 +33,11 @@ const USAGE = `Usage:
   unblocked context-research [--effort low|medium|high] --query "<question>"
   unblocked context-get-urls --url <url> [--url <url> ...]`;
 
-function parse(argv: string[]): { command: string; query: string; effort: string; urls: string[] } {
-  const [command = "", ...rest] = argv;
-  let query = "", effort = "low";
-  const urls: string[] = [], positional: string[] = [];
-  for (let i = 0; i < rest.length; i++) {
-    const a = rest[i];
-    const value = () => rest[++i] ?? "";
-    if (a === "--query" || a === "-q") query = value();
-    else if (a.startsWith("--query=")) query = a.slice(8);
-    else if (a === "--effort") effort = value();
-    else if (a.startsWith("--effort=")) effort = a.slice(9);
-    else if (a === "--url" || a === "--urls") urls.push(...value().split(/[\s,]+/).filter(Boolean));
-    else if (a.startsWith("--url=")) urls.push(a.slice(6));
-    else if (!a.startsWith("-")) positional.push(a);
-  }
-  if (!query && positional.length) query = positional.join(" ");
-  if (!urls.length && command.replace(/_/g, "-") === "context-get-urls") urls.push(...positional);
-  return { command: command.replace(/_/g, "-"), query, effort, urls };
-}
-
 function gitStatus(repo: string): string {
   try { return execFileSync("git", ["status", "--porcelain"], { cwd: repo, stdio: "pipe" }).toString(); } catch { return ""; }
 }
 
-const args = parse(process.argv.slice(2));
+const args = parseArgs(process.argv.slice(2));
 if (args.command === "help" || args.command === "--help" || args.command === "-h" || !args.command) {
   console.log(USAGE);
   process.exit(0);

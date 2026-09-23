@@ -1,7 +1,9 @@
 // Wiring for the simulated context engine: an `unblocked` shim first on the
 // Unblocked arm's PATH, the UC_ENGINE_* variables that configure cli.ts, and
 // reading back the calls it logged.
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import type { AgentName } from "../agents/types.ts";
@@ -42,17 +44,21 @@ export function engineDir(armOutDir: string): string {
   return path.join(armOutDir, "engine");
 }
 
-// The environment for the Unblocked arm: the shim first on PATH, and what the
-// engine needs to run the research agent in the original repository.
-export function engineEnv(opts: { armOutDir: string; agent: AgentName; model?: string; repo: string; engine: ContextEngineConfig }): NodeJS.ProcessEnv {
+// The Unblocked arm's environment and the shim to call. Agents run commands
+// through login shells that reorder PATH, so the arm is told the shim's
+// absolute path rather than relying on PATH. It lives in the temp dir, under a
+// name without "unblocked", so the path neither contains spaces nor gives the
+// blinded judge a hint.
+export function engineEnv(opts: { armOutDir: string; agent: AgentName; model?: string; repo: string; engine: ContextEngineConfig }): { env: NodeJS.ProcessEnv; command: string } {
   const dir = engineDir(opts.armOutDir);
-  const bin = path.join(dir, "bin");
+  fs.mkdirSync(dir, { recursive: true });
+  const bin = path.join(os.tmpdir(), `uc-engine-${randomBytes(4).toString("hex")}`, "bin");
   fs.mkdirSync(bin, { recursive: true });
   const shim = path.join(bin, "unblocked");
   fs.writeFileSync(shim, `#!/bin/sh\nexec "${process.execPath}" "${CLI}" "$@"\n`);
   fs.chmodSync(shim, 0o755);
   const inherited = process.env.PATH ?? "";
-  return {
+  const env = {
     ...process.env,
     PATH: `${bin}${path.delimiter}${inherited}`,
     UC_ENGINE_DIR: dir,
@@ -64,6 +70,7 @@ export function engineEnv(opts: { armOutDir: string; agent: AgentName; model?: s
     // The research agent's own PATH: without the shim, so it cannot recurse.
     UC_ENGINE_PATH: inherited,
   };
+  return { env, command: shim };
 }
 
 export function readEngineCalls(armOutDir: string): EngineSummary {

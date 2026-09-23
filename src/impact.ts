@@ -3,11 +3,12 @@ import type { ArmResult, ComparisonResult, ContextImpact } from "./types.ts";
 import { formatCost, log } from "./util.ts";
 import { runStructured } from "./analyst.ts";
 import { describeEconomics } from "./economics.ts";
+import { unblockedCommand } from "./unblocked-cli.ts";
 
 interface ResearchCall { turn: number; tool: string; query: string; items: { title: string; chars: number; preview: string }[]; chars: number }
 
 const isResearch = (name: string, input: Record<string, unknown>) =>
-  name.toLowerCase().includes("unblocked") || (name === "Bash" && /^unblocked\s+context/.test(String(input.command ?? "")));
+  name.toLowerCase().includes("unblocked") || (name === "Bash" && !!unblockedCommand(String(input.command ?? "")));
 
 const isExternal = (name: string, input: Record<string, unknown>) =>
   /^(WebFetch|WebSearch)$/.test(name) || (name === "Bash" && /\b(gh (api|search|pr|repo)|curl |wget |rails runner|psql |mysql )/.test(String(input.command ?? "")));

@@ -14,6 +14,7 @@ import { applyTieBreaker, assessQuality } from "./quality.ts";
 import { assessImpact } from "./impact.ts";
 import { economics } from "./economics.ts";
 import { adjudicateDisputes, applyWaivers, disputedSection, extractRequirements, fixPrompt, reviewDraft } from "./review.ts";
+import { unblockedCommand } from "./unblocked-cli.ts";
 
 export function agentCommits(cwd: string, baseSha: string, refsBefore: Map<string, string> | null): Set<string> {
   const heads = new Set<string>();
@@ -124,7 +125,7 @@ export function extractUnblockedCalls(toolCalls: { name: string; args: Record<st
     const isUbMcp = tc.mcpServer?.toLowerCase().includes("unblocked")
       || tc.name.toLowerCase().includes("unblocked");
     const isUbCli = tc.name === "Bash"
-      && /^unblocked\s+context[_-]/.test((tc.args.command as string) ?? "");
+      && !!unblockedCommand((tc.args.command as string) ?? "");
 
     if (isUbMcp) {
       const tool = tc.name.split(/__|::/).pop() ?? tc.name;
@@ -132,9 +133,9 @@ export function extractUnblockedCalls(toolCalls: { name: string; args: Record<st
       calls.push({ tool, query: query ?? undefined });
     } else if (isUbCli) {
       const cmd = (tc.args.command as string) ?? "";
-      const match = cmd.match(/^unblocked\s+(context[_-]\w+)/);
+      const match = unblockedCommand(cmd);
       if (match) {
-        const tool = match[1];
+        const tool = match.tool;
         const queryFlag = cmd.match(/--query\s+["']?(.+?)["']\s*(?:--|$)/)?.[1];
         const positional = cmd.match(/(?:--effort\s+\w+\s+)?["']([^"']+)["']\s*$/)?.[1]
           ?? cmd.match(/(?:--effort\s+\w+\s+)(\S.+)$/)?.[1];
@@ -213,12 +214,15 @@ async function runArm(config: Config, condition: Condition, outDir: string, refs
   } else {
     nudge = UNBLOCKED_MCP_NUDGE;
   }
-  if (condition === "unblocked" && config.contextEngine) nudge = simulatedEngineNote(config.contextEngine.timeoutSeconds) + nudge;
-  const prompt = nudge + config.task;
-  // Simulated context engine: this arm's `unblocked` is the local research agent.
-  const env = condition === "unblocked" && config.contextEngine
+  // Simulated context engine: this arm's `unblocked` is the local research
+  // agent, called by the shim's absolute path.
+  const engine = condition === "unblocked" && config.contextEngine
     ? engineEnv({ armOutDir: outDir, agent: config.agent, model: config.model, repo: config.repo, engine: config.contextEngine })
     : undefined;
+  const env = engine?.env;
+  const engineCommand = engine?.command;
+  if (engine && config.contextEngine) nudge = simulatedEngineNote(config.contextEngine.timeoutSeconds, engine.command) + nudge.replaceAll("\nunblocked context-research", `\n${engine.command} context-research`);
+  const prompt = nudge + config.task;
 
   const suffix = randomBytes(4).toString("hex");
   const wtName = `${condition}-${suffix}`;
@@ -244,6 +248,7 @@ async function runArm(config: Config, condition: Condition, outDir: string, refs
     blockUnblocked: condition === "baseline",
     cliMode: config.cliMode,
     env,
+    engineCommand,
   });
   spentMs += runResult.durationMs;
   log(`[${condition}] Done: ${formatDuration(runResult.durationMs)}, ${runResult.assistantTurns} turns, exit=${runResult.exitCode}${runResult.timedOut ? " (TIMED OUT)" : ""}${runResult.killedReason && !runResult.timedOut ? ` (killed: ${runResult.killedReason})` : ""}`);
@@ -279,7 +284,7 @@ async function runArm(config: Config, condition: Condition, outDir: string, refs
       const fixRun = await adapter.run({
         prompt: (condition === "baseline" ? BASELINE_FIX_PREAMBLE : "") + fixPrompt(round, r),
         worktreePath: wtPath, model: config.model, condition, timeoutMs: remainingMs(), outDir,
-        blockUnblocked: condition === "baseline", cliMode: config.cliMode, env, resumeSessionId: run.sessionId, priorTranscriptPath: run.jsonlPath, jsonlName: `${condition}.fix${round}.jsonl`,
+        blockUnblocked: condition === "baseline", cliMode: config.cliMode, env, engineCommand, resumeSessionId: run.sessionId, priorTranscriptPath: run.jsonlPath, jsonlName: `${condition}.fix${round}.jsonl`,
       });
       spentMs += fixRun.durationMs;
       log(`[${condition}] Fix pass ${round} done: ${formatDuration(fixRun.durationMs)}, ${fixRun.assistantTurns} msgs, exit=${fixRun.exitCode}${fixRun.killedReason ? ` (killed: ${fixRun.killedReason})` : ""}`);
@@ -308,7 +313,7 @@ async function runArm(config: Config, condition: Condition, outDir: string, refs
   }
 
   const cost = run.totalCostUsd ?? estimateCost(pricingModel(config, run), run.tokenUsage, adapter.cacheWriteTier);
-  const contextEngine = env ? readEngineCalls(outDir) : undefined;
+  const contextEngine = engine ? readEngineCalls(outDir) : undefined;
   if (contextEngine) log(`[${condition}] Context engine: ${contextEngine.calls.length} research call(s), ${formatCost(contextEngine.costUsd)}, ${formatDuration(contextEngine.durationMs)}${contextEngine.calls.some(c => c.repoModified) ? " — ⚠ a research call modified the repository" : ""}`);
 
   return { condition, run, diff, diffStats, unblockedCalls, estimatedCost: cost, review, ...(contextEngine ? { contextEngine } : {}) };
@@ -320,10 +325,13 @@ function pricingModel(config: Config, run: RunResult): string {
   return run.model ?? config.model ?? "";
 }
 
-// The simulated engine does a full research pass per call, far slower than
-// the real service; say so, or agents kill it at their shell's default timeout.
-function simulatedEngineNote(timeoutSeconds: number): string {
-  return `NOTE: \`unblocked context-research\` runs a full research pass and can take up to ${Math.ceil(timeoutSeconds / 60)} minutes. Give the command a timeout of at least ${Math.ceil(timeoutSeconds / 60) + 1} minutes and wait for it to finish.\n\n`;
+// The simulated engine's CLI is called by its full path (login shells reorder
+// PATH), and a research pass takes minutes, far slower than the real service;
+// say both, or agents run another `unblocked` or kill it at their shell's
+// default timeout.
+function simulatedEngineNote(timeoutSeconds: number, command: string): string {
+  const minutes = Math.ceil(timeoutSeconds / 60);
+  return `NOTE: the Unblocked CLI for this task is ${command}. Always run it by that full path (\`${command} context-research ...\`, \`${command} context-get-urls ...\`); never run a bare \`unblocked\` command. A research call can take up to ${minutes} minutes: give the command a timeout of at least ${minutes + 1} minutes and wait for it to finish.\n\n`;
 }
 
 // Requirements come from the task, plus the acceptance criteria when given.

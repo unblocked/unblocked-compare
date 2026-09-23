@@ -24,6 +24,9 @@ export interface AgentRunOpts {
   // and no file-editing tools.
   appendSystemPrompt?: string;
   readOnly?: boolean;
+  // Simulated context engine: the shim's absolute path. Any other `unblocked`
+  // the arm runs is the real service, and the run is killed.
+  engineCommand?: string;
 }
 
 export interface Agent {

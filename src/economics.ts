@@ -3,9 +3,10 @@ import type { ArmResult, ComparisonResult, EconomicsBreakdown, ToolCall } from "
 import { cacheWriteRate, priceFor } from "./util.ts";
 import { AGENTS } from "./agents/index.ts";
 import { VERIFY_CMD } from "./analyst.ts";
+import { unblockedCommand } from "./unblocked-cli.ts";
 
 const isResearch = (name: string, input: Record<string, unknown>) =>
-  name.toLowerCase().includes("unblocked") || (name === "Bash" && /^unblocked\s+context/.test(String(input.command ?? "")));
+  name.toLowerCase().includes("unblocked") || (name === "Bash" && !!unblockedCommand(String(input.command ?? "")));
 
 function researchCarried(arm: ArmResult): { calls: number; payloadTokens: number; carriedTokens: number } {
   let jsonl = "";

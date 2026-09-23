@@ -116,7 +116,7 @@ Reports can be rebuilt from saved transcripts after a parser or report change, w
 bun scripts/report_from_jsonl.ts <baseline.jsonl> <unblocked.jsonl> <result.json> [--attribute[=model]] [--rejudge[=model]] [--impact[=model]]
 ```
 
-Tokens, cost, time and tool calls are always re-parsed from the transcripts. The task, branch, diffs, review record, analyst labels, verdict and impact are carried over from `result.json`. The flags re-run the corresponding model pass (they cost money; without them the regeneration is free). Output goes to `results/regenerated/` under the current directory. Without a `result.json`, pass `[model] [branch] [task]` instead; diffs are then unavailable.
+Tokens, cost, time and tool calls are always re-parsed from the transcripts. The task, branch, diffs, review record, analyst labels, verdict and impact are carried over from `result.json`. The flags re-run the corresponding model pass (they cost money; without them the regeneration is free). Output goes to a `regenerated/` folder next to the `result.json` given (`results/regenerated/` without one). Without a `result.json`, pass `[model] [branch] [task]` instead; diffs are then unavailable.
 
 ### Output
 

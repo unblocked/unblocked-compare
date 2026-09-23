@@ -129,8 +129,12 @@ const repo = orig?.repo ?? repoFromCwd(init.cwd) ?? "(from transcripts)";
 // A simulated engine's research time counts as at most ENGINE_CALL_CAP_MS per
 // call (idempotent: an already-adjusted transcript has nothing left to remove).
 if (orig?.contextEngine === "simulated" && orig.unblocked.contextEngine) {
+  // Start from the unadjusted transcript when an earlier run kept one, so the
+  // discount is computed afresh rather than found already applied.
+  const unadjusted = ubFile.replace(/\.jsonl$/, ".unadjusted.jsonl");
+  if (fs.existsSync(unadjusted)) fs.copyFileSync(unadjusted, ubFile);
   const removed = discountEngineTime(ubFile);
-  orig.unblocked.contextEngine.discountedMs = (orig.unblocked.contextEngine.discountedMs ?? 0) + removed;
+  orig.unblocked.contextEngine.discountedMs = removed;
   orig.unblocked.contextEngine.capMs = ENGINE_CALL_CAP_MS;
   if (removed) console.error(`[unblocked] discounted ${Math.round(removed / 1000)}s of simulated research time`);
 }
@@ -177,7 +181,8 @@ applyTieBreaker(result);
 const reviewCost = (a: ArmResult) => (a.review?.passes ?? []).reduce((s, p) => s + p.reviewCostUsd, 0);
 result.analysisCostUsd = (baseline.attribution?.analystCostUsd ?? 0) + (unblocked.attribution?.analystCostUsd ?? 0) + (result.quality?.judgeCostUsd ?? 0) + (result.impact?.costUsd ?? 0) + reviewCost(baseline) + reviewCost(unblocked) + (result.reviewSpec?.costUsd ?? 0);
 
-const outDir = path.join(process.cwd(), "results", "regenerated");
+// Next to the run it regenerates, when given its result.json.
+const outDir = thirdArg?.endsWith(".json") ? path.join(path.dirname(path.resolve(thirdArg)), "regenerated") : path.join(process.cwd(), "results", "regenerated");
 fs.mkdirSync(outDir, { recursive: true });
 printReport(result);
 writeJsonResult(result, outDir);

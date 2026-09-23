@@ -58,6 +58,7 @@ function toolWaitByCategory(arm: ArmResult, core: boolean): Record<string, numbe
     const cmd = String(tc.args.command ?? "");
     const kind = tc.isMcp ? (tc.mcpServer?.toLowerCase().includes("unblocked") ? "research" : "mcp")
       : tc.name !== "Bash" ? "file ops"
+      : unblockedCommand(cmd) ? "research"
       : /\b(rubocop|gofmt|go vet|tsc|eslint|detekt|ktlint)\b|lint/.test(cmd) ? "lint/typecheck"
       : VERIFY_CMD.test(cmd) ? "tests/CI/build"
       : /\b(gh api|gh search|curl |wget |rails runner)\b/.test(cmd) ? "external lookups"

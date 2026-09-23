@@ -12,6 +12,7 @@ import { parseStreamJson, type SessionCumulative } from "../src/transcript.ts";
 import { printReport, writeHtmlReport, writeJsonResult } from "../src/report.ts";
 import { estimateCost } from "../src/util.ts";
 import { AGENTS } from "../src/agents/index.ts";
+import { discountEngineTime, ENGINE_CALL_CAP_MS } from "../src/engine/discount.ts";
 import { attribute, buildWalk, rollup } from "../src/attribution.ts";
 import { applyTieBreaker, assessQuality } from "../src/quality.ts";
 import { assessImpact } from "../src/impact.ts";
@@ -125,6 +126,14 @@ const tier = AGENTS[orig?.agent ?? "claude"].cacheWriteTier;
 const branch = orig?.branch ?? branchArg ?? "(not recorded in transcripts)";
 const task = orig?.task ?? (taskArg.join(" ") || "(task not recorded in transcripts)");
 const repo = orig?.repo ?? repoFromCwd(init.cwd) ?? "(from transcripts)";
+// A simulated engine's research time counts as at most ENGINE_CALL_CAP_MS per
+// call (idempotent: an already-adjusted transcript has nothing left to remove).
+if (orig?.contextEngine === "simulated" && orig.unblocked.contextEngine) {
+  const removed = discountEngineTime(ubFile);
+  orig.unblocked.contextEngine.discountedMs = (orig.unblocked.contextEngine.discountedMs ?? 0) + removed;
+  orig.unblocked.contextEngine.capMs = ENGINE_CALL_CAP_MS;
+  if (removed) console.error(`[unblocked] discounted ${Math.round(removed / 1000)}s of simulated research time`);
+}
 const baseline = arm("baseline", baseFile, model, orig?.baseline);
 const unblocked = arm("unblocked", ubFile, model, orig?.unblocked);
 for (const a of [baseline, unblocked]) {

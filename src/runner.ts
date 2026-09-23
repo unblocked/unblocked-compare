@@ -6,6 +6,8 @@ import type { ArmResult, ComparisonResult, Condition, Config, DiffStats, ReviewP
 import { createWorktree, removeWorktree } from "./worktree.ts";
 import { AGENTS } from "./agents/index.ts";
 import { engineEnv, readEngineCalls } from "./engine/shim.ts";
+import { discountEngineTime, ENGINE_CALL_CAP_MS } from "./engine/discount.ts";
+import { parseStreamJson } from "./transcript.ts";
 import { printReport, writeJsonResult, writeHtmlReport, writeBatchSummary } from "./report.ts";
 import { estimateCost, formatCost, formatDiffSummary, formatDuration, log, type CacheWriteTier } from "./util.ts";
 import { git, isAncestor, snapshotRefs, tryGit } from "./git.ts";
@@ -322,6 +324,18 @@ async function runArm(config: Config, condition: Condition, outDir: string, refs
 
   const cost = run.totalCostUsd ?? estimateCost(pricingModel(config, run), run.tokenUsage, adapter.cacheWriteTier);
   const contextEngine = engine ? readEngineCalls(outDir) : undefined;
+  if (engine && contextEngine) {
+    // Simulated research is far slower than the real service: count each call
+    // as at most ENGINE_CALL_CAP_MS, before attribution reads the transcript.
+    const discountedMs = discountEngineTime(run.jsonlPath, engine.command);
+    contextEngine.discountedMs = discountedMs;
+    contextEngine.capMs = ENGINE_CALL_CAP_MS;
+    if (discountedMs) {
+      const reparsed = parseStreamJson(fs.readFileSync(run.jsonlPath, "utf8"), null, true);
+      run = { ...run, durationMs: Math.max(0, run.durationMs - discountedMs), toolCalls: reparsed.toolCalls };
+      log(`[${condition}] Context engine: ${formatDuration(discountedMs)} of research time discounted (each call counts as at most ${formatDuration(ENGINE_CALL_CAP_MS)})`);
+    }
+  }
   if (contextEngine) log(`[${condition}] Context engine: ${contextEngine.calls.length} research call(s), ${formatCost(contextEngine.costUsd)}, ${formatDuration(contextEngine.durationMs)}${contextEngine.calls.some(c => c.repoModified) ? " — ⚠ a research call modified the repository" : ""}`);
 
   return { condition, run, diff, diffStats, unblockedCalls, estimatedCost: cost, review, ...(contextEngine ? { contextEngine } : {}) };

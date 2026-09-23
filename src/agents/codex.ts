@@ -54,6 +54,8 @@ export function translator(model: string | undefined, rename: Map<string, string
   let turnStartMs = 0;
   let finalText = "";
   const opened = new Set<string>();
+  // Tools started and not yet finished, with their start times.
+  const inFlight = new Map<string, number>();
   const iso = (ms: number) => new Date(ms).toISOString();
   const assistant = (ms: number, block: object) => {
     if (resultSinceMsg || !msgId) { msgId = `codex-${sessionId ?? "session"}-${++msgSeq}`; resultSinceMsg = false; }
@@ -121,8 +123,21 @@ export function translator(model: string | undefined, rename: Map<string, string
           const use = toolUse(item);
           if (!use) return [];
           const out: object[] = [];
-          if (!opened.has(item.id)) { opened.add(item.id); out.push(assistant(receivedMs, { type: "tool_use", id: item.id, ...use })); }
-          if (e.type === "item.completed") { const r = resultOf(item); out.push(toolResult(receivedMs, item.id, r.content, r.isError)); }
+          if (!opened.has(item.id)) {
+            opened.add(item.id);
+            // An item first seen already completed while a command is still
+            // running (Codex reports some file changes only when they land)
+            // was issued with that command: stamp it at the command's start,
+            // or the command's run time reads as model time.
+            const issuedMs = e.type === "item.completed" && inFlight.size ? Math.max(...inFlight.values()) : receivedMs;
+            out.push(assistant(issuedMs, { type: "tool_use", id: item.id, ...use }));
+            if (e.type === "item.started") inFlight.set(item.id, receivedMs);
+          }
+          if (e.type === "item.completed") {
+            inFlight.delete(item.id);
+            const r = resultOf(item);
+            out.push(toolResult(receivedMs, item.id, r.content, r.isError));
+          }
           return out;
         }
         case "turn.completed": {

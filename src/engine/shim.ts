@@ -36,6 +36,10 @@ export interface EngineSummary {
   calls: EngineCall[];
   costUsd: number;
   durationMs: number;
+  // Research time removed from the arm's timings (each call counts as at most
+  // capMs), and that cap.
+  discountedMs?: number;
+  capMs?: number;
 }
 
 const CLI = path.join(import.meta.dir, "cli.ts");

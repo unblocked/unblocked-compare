@@ -312,6 +312,7 @@ export function printReport(result: ComparisonResult): void {
   lines.push(r(`  Longest arm: ${formatDuration(result.totalDurationMs)}    Arms cost: ${formatCost(result.totalEstimatedCost)}${result.analysisCostUsd ? `    Analysis: ${formatCost(result.analysisCostUsd)}` : ""}`));
   const engine = result.unblocked.contextEngine;
   if (engine) lines.push(r(`  Simulated context engine: ${engine.calls.length} call(s), ${formatDuration(engine.durationMs)}, ${formatCost(engine.costUsd)} (not in arms cost)`));
+  if (engine?.discountedMs) lines.push(r(`    research time counted as ≤${formatDuration(engine.capMs ?? 0)} per call: ${formatDuration(engine.discountedMs)} removed from ${L.short} timings`));
   lines.push("╚" + "═".repeat(W + 2) + "╝");
   lines.push("");
 
@@ -1203,7 +1204,7 @@ function engineSection(arm: ArmResult): string {
   return `
   <div class="section">
     <div class="section-title">Simulated context engine <span class="section-sub">${e.calls.length} call(s) · ${formatDuration(e.durationMs)} · ${formatCost(e.costUsd)}</span></div>
-    <div class="section-note">The ${L.short} arm's <code>unblocked</code> CLI was a local research agent (the same agent CLI, with its MCP servers and read-only) answering each query in the original repository. Its cost stands in for the context engine's and is not included in the arm's cost. Transcripts: <code>unblocked/engine/research-*.jsonl</code>.${modified ? ` <span style="color: var(--yellow);">A research call changed files in the repository; check <code>git status</code> there.</span>` : ""}</div>
+    <div class="section-note">The ${L.short} arm's <code>unblocked</code> CLI was a local research agent (the same agent CLI, with its MCP servers and read-only) answering each query in the original repository. Its cost stands in for the context engine's and is not included in the arm's cost. A simulated research pass takes far longer than the real service, so each call counts as at most ${formatDuration(e.capMs ?? 20_000)} in the arm's timings${e.discountedMs ? `: ${formatDuration(e.discountedMs)} removed` : ""}; the time column below is the actual. Transcripts: <code>unblocked/engine/research-*.jsonl</code>.${modified ? ` <span style="color: var(--yellow);">A research call changed files in the repository; check <code>git status</code> there.</span>` : ""}</div>
     ${e.calls.length ? `<div class="tool-table-wrap">
       <table class="tool-table">
         <thead><tr><th>#</th><th>Command</th><th>Query</th><th>Time</th><th>Cost</th><th>Tools</th><th>Status</th></tr></thead>

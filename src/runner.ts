@@ -163,7 +163,7 @@ ${RESEARCH_DISCIPLINE}
 TASK:
 `;
 
-const UNBLOCKED_MCP_NUDGE = `IMPORTANT: Before doing anything else, call the Unblocked context_research MCP tool with a detailed query describing the task (effort: low). This is your FIRST action. Use context_research again (effort: low) at the points below, and context_get_urls to expand on anything it surfaces. You may also use all other tools, MCP servers, plugins, and skills.
+const UNBLOCKED_MCP_NUDGE = `IMPORTANT: Before doing anything else, call the Unblocked context_research MCP tool with a detailed query describing the task (effort: low). This is your FIRST action. Use context_get_urls to expand on anything it surfaces. Call context_research again only when a later question needs context you do not have yet; do not repeat a question it has already answered. You may also use all other tools, MCP servers, plugins, and skills.
 
 ${RESEARCH_DISCIPLINE}
 
@@ -172,7 +172,7 @@ TASK:
 
 const UNBLOCKED_CLI_NUDGE = `IMPORTANT: Before doing anything else, run the Unblocked CLI to research this task. This is your FIRST action:
 unblocked context-research --effort low --query "<detailed query describing the task>"
-Use context-research again (--effort low) at the points below, and context-get-urls to expand on anything it surfaces. You may also use all other tools, MCP servers, plugins, and skills.
+Use context-get-urls to expand on anything it surfaces. Run context-research again only when a later question needs context you do not have yet; do not repeat a question it has already answered. You may also use all other tools, MCP servers, plugins, and skills.
 
 ${RESEARCH_DISCIPLINE}
 

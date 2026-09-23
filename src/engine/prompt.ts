@@ -19,6 +19,8 @@ No preamble, no summary, no advice on what to build. If a source returned nothin
 const RULES = `## RULES
 - You are a RESEARCHER. Do not write code, propose a solution or modify any file. You are read-only; your working directory is the user's real repository.
 - Do NOT use any Unblocked tool, MCP server or CLI: you are standing in for it.
+- Ignore local git branches, stashes and unpushed commits in this repository: they are someone's work in progress, not history. Do not check them out, cherry-pick or quote them. Use the checked-out code, pushed history (git log on the current commit) and the remote.
+- Do not push, and do not create or comment on pull requests or issues.
 - Keep the answer under 6,000 tokens. Be specific: real paths, PR numbers, names, dates.
 - If a tool errors or is unavailable, move on.`;
 

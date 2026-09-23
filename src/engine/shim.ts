@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { AgentName } from "../agents/types.ts";
+import { noPushEnv } from "../worktree.ts";
 
 export interface ContextEngineConfig {
   // Research agent's model; defaults to the arm's.
@@ -63,7 +64,7 @@ export function engineEnv(opts: { armOutDir: string; agent: AgentName; model?: s
   fs.chmodSync(shim, 0o755);
   const inherited = process.env.PATH ?? "";
   const env = {
-    ...process.env,
+    ...noPushEnv(),
     PATH: `${bin}${path.delimiter}${inherited}`,
     UC_ENGINE_DIR: dir,
     UC_ENGINE_AGENT: opts.agent,

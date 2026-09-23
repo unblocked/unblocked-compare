@@ -11,6 +11,24 @@ export interface UnblockedCommand {
   path: string;
 }
 
+// A shell command that publishes outside the working copy: a push, or a GitHub
+// write through gh (PRs, issues, comments, reviews, API writes). Agents must
+// not do this during a comparison; on ENG-735 one pushed and opened a PR.
+const OUTWARD = [
+  /\bgit\s+push\b/,
+  /\bgh\s+(pr|issue|release|repo)\s+(create|merge|close|edit|comment|review|reopen|ready|delete|fork)\b/,
+  /\bgh\s+api\b[^|;&]*(?:-X|--method)\s*(?:POST|PATCH|PUT|DELETE)\b/i,
+  /\bgh\s+api\b(?![^|;&]*(?:-X|--method)\s*GET\b)[^|;&]*\s(?:-f|-F|--field|--raw-field|--input)\s/,
+];
+
+export function outwardAction(command: string): string | null {
+  for (const re of OUTWARD) {
+    const m = command.match(re);
+    if (m) return m[0].trim();
+  }
+  return null;
+}
+
 export function unblockedCommand(command: string): UnblockedCommand | null {
   const m = command.match(CLI);
   return m ? { tool: m[2], path: m[1] } : null;

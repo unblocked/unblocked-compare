@@ -21,7 +21,7 @@ Supported agents (`--agent`):
 
 ### How it works
 
-1. Creates two isolated git worktrees from the same branch
+1. Creates two isolated copies of the repository at the same commit: `git clone --shared` (objects borrowed, nothing copied) with every branch and remote-tracking ref removed, so an agent cannot find local work in progress or another run's commits. Submodules come from the repository's local copies. Pushing is blocked (see [Safety](#safety))
 2. Runs the agent in parallel on both:
    - **Baseline**: all MCP servers and tools available *except* Unblocked (see [How blocking works](#how-blocking-works))
    - **Unblocked**: all MCP servers and tools available, with a nudge to call `context_research` first and throughout
@@ -62,7 +62,7 @@ bun start -- --agent codex --model gpt-5.5 --repo /path/to/repo --task "implemen
 | `--model <model>` | Model for the agents | `opus` for claude; the CLI's configured default otherwise |
 | `--timeout <seconds>` | Max seconds per arm, shared across the draft and every fix pass | `5400` |
 | `--branch <name>` | Branch to base worktrees on | current HEAD |
-| `--keep-worktrees` | Don't clean up worktrees after run | `false` |
+| `--keep-worktrees` | Don't delete the arms' repository copies after the run | `false` |
 | `--cli` | Use the Unblocked CLI via the shell instead of MCP; the MCP server is then off in both arms | `false` |
 | `--repeat <n>` | Full comparisons to run for this task; the batch summary aggregates them | `2` |
 | `--concurrency <n>` | Comparisons to run at once | `2` |
@@ -165,7 +165,7 @@ src/
 │   ├── cursor.ts   Cursor adapter and stream-json translator
 │   └── codex.ts    Codex adapter and `exec --json` translator
 ├── transcript.ts   Canonical transcript parser (tokens, cost, tool calls, timing)
-├── worktree.ts     Worktree creation and cleanup, agent branch reset
+├── worktree.ts     Isolated per-arm clones, push blocking
 ├── git.ts          Git helpers
 ├── review.ts       Requirement extraction, per-round check, dispute rulings and waivers
 ├── analyst.ts      Single-turn structured model calls, blinding of treatment names
@@ -189,7 +189,17 @@ Every analysis pass reads Claude Code's stream-json. The Cursor and Codex adapte
 - Time: Cursor events carry timestamps. Codex events don't, so arrival time stands in.
 - Tokens: Cursor and Codex report totals per session only, not per message, so per-message cost and output in the attribution are apportioned (the report marks per-message output as estimated). Codex's `input_tokens` includes cached tokens; they are split out. Neither reports cost, so cost is tokens × the list price in `src/util.ts`.
 
-#### Contamination guards
+#### Safety
+
+Agents run with every permission, in a copy of a real repository, with the user's credentials. Nothing they do may leave that copy:
+
+- Each arm's clone sets `origin`'s push URL to an unreachable one, and every agent process (arms and the simulated engine's research agents) runs with git configuration, passed through the environment, that rewrites any push URL the same way. A `git push` fails.
+- The guard kills a run whose agent runs `git push`, a `gh pr|issue|release|repo` write (create, merge, comment, review, ...), or a `gh api` write. `gh` has no switch to block writes, so this reacts as the command starts; without a pushed branch, `gh pr create` fails anyway.
+- The prompts forbid pushing and opening or commenting on pull requests and issues.
+
+On ENG-735, before these, an agent committed in its worktree, pushed a branch to the real remote and opened a PR as the user; agents in both arms also cherry-picked a fix from the user's local branches, which a shared worktree exposes.
+
+### Contamination guards
 
 - **Baseline arm**: Unblocked MCP tools and CLI blocked via `--disallowed-tools`. If the baseline somehow calls Unblocked, the run is killed immediately.
 - **Unblocked arm**: If Unblocked isn't called within 120 seconds, the run is killed (ensures the nudge prompt worked).

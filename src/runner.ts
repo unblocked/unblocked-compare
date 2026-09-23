@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { ArmResult, ComparisonResult, Condition, Config, DiffStats, ReviewPass, ReviewRound, ReviewSpec, RunResult, TokenUsage, UnblockedCall } from "./types.ts";
-import { createWorktree, removeWorktree } from "./worktree.ts";
+import { createWorktree, noPushEnv, removeWorktree } from "./worktree.ts";
 import { AGENTS } from "./agents/index.ts";
 import { engineEnv, readEngineCalls } from "./engine/shim.ts";
 import { discountEngineTime, ENGINE_CALL_CAP_MS } from "./engine/discount.ts";
@@ -154,6 +154,7 @@ const RESEARCH_DISCIPLINE = `How to research, whatever tools you use:
 - A search that returns nothing is not a finding. If a source returns nothing on a question that matters, check a second source before concluding that nothing exists: a code search across the organisation's repositories, the file a comment or ticket points at, a runbook.
 - Do not end your turn while a command you started in the background is still running: wait for it, read its output, and report the result.
 - For a build, test suite or other command that takes more than a minute or so, choose one of two ways to wait, never a third: (a) if you have other useful work ready right now (reading a different file, writing a test for a part you already understand), background the command and do that work, then check its result when you circle back; (b) if you do not, issue ONE command that waits for it to finish (poll in a loop inside that single call, e.g. \`for i in $(seq 1 40); do grep -q EXIT= log && break; sleep 15; done; cat log\`) and treat its return as the answer. Never issue a separate tool call per check (\`tail log\`, again, again): each one is a full turn, so ten checks cost ten times what one wait does, and checking on nothing to do costs the most of all.
+- Do not push, and do not open, comment on or review pull requests or issues: your change stays in this working copy, where it is read from. Commit only if you need to.
 - Your final response is the PR description a reviewer will read: what changed, what you verified and how, and any part of the task you deliberately left out, with the reason. Say where each decisive fact came from, and say plainly when you are inferring.`;
 
 const BASELINE_NUDGE = `IMPORTANT: Do NOT use any Unblocked tools, Unblocked skills, or Unblocked CLI commands. Do NOT call context_research, context_get_urls, or any tool with "unblocked" in its name. Do NOT run the "unblocked" CLI binary. You may use all other tools, MCP servers, plugins, and skills, including code search across the organisation's repositories.
@@ -236,7 +237,8 @@ async function runArm(config: Config, condition: Condition, outDir: string, refs
   const engine = condition === "unblocked" && config.contextEngine
     ? engineEnv({ armOutDir: outDir, agent: config.agent, model: config.model, repo: config.repo, engine: config.contextEngine })
     : undefined;
-  const env = engine?.env;
+  // Every arm runs with pushes blocked; the simulated engine's env adds to it.
+  const env = engine?.env ?? noPushEnv();
   const engineCommand = engine?.command;
   if (engine && config.contextEngine) nudge = simulatedEngineNote(config.contextEngine.timeoutSeconds, engine.command) + nudge.replaceAll("\nunblocked context-research", `\n${engine.command} context-research`);
   const prompt = nudge + config.task;
@@ -427,8 +429,8 @@ export async function run(config: Config, outDirOverride?: string, sharedSpec?: 
   } finally {
     if (!config.keepWorktrees) {
       log("Cleaning up worktrees...");
-      for (const [condition, name] of ctx.worktreeByArm) {
-        removeWorktree(config.repo, name, refsBefore, ctx.agentCommitsByArm.get(condition) ?? new Set());
+      for (const [, name] of ctx.worktreeByArm) {
+        removeWorktree(config.repo, name);
       }
     }
   }

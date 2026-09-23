@@ -25,7 +25,7 @@ Binary overrides: `CLAUDE_BINARY` (default `claude`), `CURSOR_BINARY` (default `
 - `src/runner.ts` — Orchestrate: batches, parallel arm execution, review loop, diff capture, nudges
 - `src/agents/` — One adapter per agent CLI (`claude.ts`, `cursor.ts`, `codex.ts`): per-worktree Unblocked blocking, spawn args, resume, and a translator into the canonical transcript. `session.ts` is the shared spawn loop with the timeout and contamination guards
 - `src/transcript.ts` — Canonical transcript parser. The canonical format is Claude Code's stream-json; every analysis reads it
-- `src/worktree.ts` — Worktree creation and cleanup
+- `src/worktree.ts` — Isolated per-arm clones (`--shared`, base commit only, submodules from local copies) and push blocking (`noPushEnv`); outward-action guard patterns are in `src/unblocked-cli.ts`
 - `src/review.ts` — Shared requirement list, per-round check, disputes and waivers
 - `src/analyst.ts` — Structured single-turn model calls, blinding
 - `src/attribution.ts` — Per-message cost/time walk and work/verify/housekeeping labels

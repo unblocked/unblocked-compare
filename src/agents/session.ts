@@ -6,7 +6,7 @@ import type { RunResult } from "../types.ts";
 import { log } from "../util.ts";
 import { parseStreamJson, parseToolName } from "../transcript.ts";
 import type { AgentRunOpts } from "./types.ts";
-import { unblockedCommand } from "../unblocked-cli.ts";
+import { outwardAction, unblockedCommand } from "../unblocked-cli.ts";
 
 // Turns one line of the agent CLI's stdout into zero or more canonical
 // (Claude Code stream-json) events. `receivedMs` is when the line arrived, for
@@ -123,6 +123,11 @@ export async function runSession(opts: AgentRunOpts & {
           if (opts.condition === "baseline" && !killed && ub) {
             log(`[${tag}] ⛔ CONTAMINATION: baseline called Unblocked — killing run`);
             kill("contamination: the baseline called Unblocked");
+          }
+          const outward = block.name === "Bash" ? outwardAction(String(input.command ?? "")) : null;
+          if (outward && !killed) {
+            log(`[${tag}] ⛔ OUTWARD ACTION: \`${outward}\` — killing run`);
+            kill(`outward action: the agent ran \`${outward}\``);
           }
           const cli = block.name === "Bash" ? unblockedCommand(String(input.command ?? "")) : null;
           if (opts.engineCommand && cli && `${cli.path}unblocked` !== opts.engineCommand && !killed) {

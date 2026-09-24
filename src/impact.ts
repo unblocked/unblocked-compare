@@ -7,10 +7,10 @@ import { unblockedCommand } from "./unblocked-cli.ts";
 
 interface ResearchCall { turn: number; tool: string; query: string; items: { title: string; chars: number; preview: string }[]; chars: number }
 
-const isResearch = (name: string, input: Record<string, unknown>) =>
+export const isResearch = (name: string, input: Record<string, unknown>) =>
   name.toLowerCase().includes("unblocked") || (name === "Bash" && !!unblockedCommand(String(input.command ?? "")));
 
-const isExternal = (name: string, input: Record<string, unknown>) =>
+export const isExternal = (name: string, input: Record<string, unknown>) =>
   /^(WebFetch|WebSearch)$/.test(name) || (name === "Bash" && /\b(gh (api|search|pr|repo)|curl |wget |rails runner|psql |mysql )/.test(String(input.command ?? "")));
 
 function excerpt(s: string, n: number): string { s = s.replace(/\s+/g, " ").trim(); return s.length > n ? s.slice(0, n) + "…" : s; }

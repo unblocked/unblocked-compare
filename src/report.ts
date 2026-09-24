@@ -1003,7 +1003,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   ${result.quality ? `
   <div class="section">
     <div class="section-title">3 · Quality analysis <span class="section-sub">blinded judge: ${escapeHtml(result.quality.judgeModel)}</span></div>
-    <div class="section-note">Blinded judge: saw task, final responses, tests run, diffs and the checker's final record as A/B in random order. Grades the same requirement list as the checker. Its verdict is decided by requirements met, then by defects the change introduces within that scope, then by material hygiene; other work beyond the task does not count. A blinded tie goes to ${L.short} only when the ${L.short} agent's candidate discovery materially improved the outcome or invalidated a requirement, and the un-blinded impact pass finds the research context led to it. Discoveries the agent made on its own, on either side, measure model variance and never break a tie.</div>
+    <div class="section-note">Blinded judge: saw task, final responses, tests run, diffs and the checker's final record as A/B in random order. Grades the same requirement list as the checker, after the revision pass: a requirement is restated to the team's intent only when one agent's tool results quote the decision, and both agents are graded against the restatement. Its verdict is decided by requirements met, then by defects the change introduces within that scope, then by material hygiene; other work beyond the task does not count. A blinded tie goes to ${L.short} only when the ${L.short} agent's candidate discovery materially improved the outcome or invalidated a requirement, and the un-blinded impact pass finds the research context led to it. Discoveries the agent made on its own, on either side, measure model variance and never break a tie.</div>
     <div class="verdict ${result.quality.verdict.better === "unblocked" ? "positive" : result.quality.verdict.better === "baseline" ? "negative" : ""}">
       <div class="verdict-head">Verdict: ${result.quality.verdict.better === "tie" ? "tie" : result.quality.verdict.better === "unblocked" ? L.arm : "Baseline"}${result.quality.verdict.tieBreaker?.applied ? ` <span class="verdict-conf">· blinded verdict was a tie; decided by the context-led discovery tie-breaker</span>` : result.impact ? ` <span class="verdict-conf">· driver: ${result.impact.impact.outcomeDriver === "context" ? "the Unblocked context" : result.impact.impact.outcomeDriver === "agent" ? "agent behaviour, not context" : "context and agent behaviour"}</span>` : ""}</div>
       <div>${escapeHtml(result.quality.verdict.rationale)}</div>
@@ -1023,7 +1023,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
         <thead><tr><th>Requirement from the task</th><th>Baseline</th><th>${L.arm}</th></tr></thead>
         <tbody>${result.quality.requirements.map(rq => `
           <tr>
-            <td>${escapeHtml(rq.requirement)}</td>
+            <td>${escapeHtml(rq.requirement)}${revisionNote(result, rq)}</td>
             <td><span class="met met-${rq.baseline.status}">${MET_ICON[rq.baseline.status]} ${rq.baseline.status}</span><div class="evidence">${escapeHtml(rq.baseline.evidence)}</div></td>
             <td><span class="met met-${rq.unblocked.status}">${MET_ICON[rq.unblocked.status]} ${rq.unblocked.status}</span><div class="evidence">${escapeHtml(rq.unblocked.evidence)}</div></td>
           </tr>`).join("")}
@@ -1212,6 +1212,15 @@ function engineSection(arm: ArmResult): string {
       </table>
     </div>` : `<div class="section-note">The agent made no research calls.</div>`}
   </div>`;
+}
+
+// A requirement the revision pass restated: the task's wording, who found the
+// team's intent, and the quote from that arm's tool results that shows it.
+function revisionNote(result: ComparisonResult, rq: { index?: number; revisedFrom?: string }): string {
+  const rev = rq.index !== undefined ? result.reviewSpec?.revisions?.find(r => r.index === rq.index) : undefined;
+  if (!rev || !rq.revisedFrom) return "";
+  const by = rev.foundBy === "unblocked" ? L.arm : "Baseline";
+  return `<div class="evidence"><b>Revised</b> from the task's wording "${escapeHtml(rq.revisedFrom)}" — ${escapeHtml(rev.reason)} Found by ${escapeHtml(by)}: <i>"${escapeHtml(rev.quote)}"</i></div>`;
 }
 
 // Arm and section names: a simulation's treatment arm is the simulated

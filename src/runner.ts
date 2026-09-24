@@ -13,6 +13,7 @@ import { estimateCost, formatCost, formatDiffSummary, formatDuration, log, type 
 import { git, isAncestor, snapshotRefs, tryGit } from "./git.ts";
 import { attribute } from "./attribution.ts";
 import { applyTieBreaker, assessQuality } from "./quality.ts";
+import { reviseRequirements } from "./revision.ts";
 import { assessImpact } from "./impact.ts";
 import { economics } from "./economics.ts";
 import { adjudicateDisputes, applyWaivers, disputedSection, extractRequirements, fixPrompt, reviewDraft } from "./review.ts";
@@ -410,7 +411,9 @@ export async function run(config: Config, outDirOverride?: string, sharedSpec?: 
   if (!refsBefore) throw new Error("Could not snapshot the repository's refs; without it the agent's commits cannot be told from existing history");
   warnIfBehindUpstream(config.repo, config.branch);
   keepMachineAwake();
-  if (config.reviewRounds > 0 || config.criteria) {
+  // A fixed requirement list whenever the analysis runs: the revision pass and
+  // the judge grade against it.
+  if (config.reviewRounds > 0 || config.criteria || config.analystModel) {
     ctx.reviewSpec = sharedSpec ? { ...sharedSpec, adjudications: [], costUsd: 0 } : await extractRequirements(specSource(config), config.checkerModel);
     if (!ctx.reviewSpec) throw new Error("Review: could not extract the task's requirements; not running the arms without a shared review standard");
   }
@@ -466,6 +469,10 @@ export async function run(config: Config, outDirOverride?: string, sharedSpec?: 
   const killed = [baseline, unblocked].filter(a => a.run.killedReason);
   if (killed.length) log(`⚠ ${killed.map(a => `${a.condition} was killed (${a.run.killedReason})`).join("; ")}: no quality or impact verdict for an unfinished comparison`);
   if (config.analystModel && !killed.length) {
+    if (result.reviewSpec) {
+      const rev = await reviseRequirements(result, config.judgeModel);
+      if (rev) { result.reviewSpec.revisions = rev.revisions; result.reviewSpec.revisionCostUsd = rev.costUsd; }
+    }
     const q = await assessQuality(result, config.judgeModel);
     if (q) result.quality = q;
     result.economics = economics(result);
@@ -477,7 +484,7 @@ export async function run(config: Config, outDirOverride?: string, sharedSpec?: 
     result.economics = economics(result);
   }
   const reviewCost = (a: ArmResult) => (a.review?.passes ?? []).reduce((s, p) => s + p.reviewCostUsd, 0);
-  result.analysisCostUsd = (baseline.attribution?.analystCostUsd ?? 0) + (unblocked.attribution?.analystCostUsd ?? 0) + (result.quality?.judgeCostUsd ?? 0) + (result.impact?.costUsd ?? 0) + reviewCost(baseline) + reviewCost(unblocked) + (reviewSpec?.costUsd ?? 0);
+  result.analysisCostUsd = (baseline.attribution?.analystCostUsd ?? 0) + (unblocked.attribution?.analystCostUsd ?? 0) + (result.quality?.judgeCostUsd ?? 0) + (result.impact?.costUsd ?? 0) + reviewCost(baseline) + reviewCost(unblocked) + (reviewSpec?.costUsd ?? 0) + (reviewSpec?.revisionCostUsd ?? 0);
   log(`Experiment wall time ${formatDuration(Date.now() - startTime)} incl. analysis`);
 
   printReport(result);
@@ -509,7 +516,7 @@ export async function runBatch(config: Config): Promise<{ batchDir: string; resu
   fs.mkdirSync(batchDir, { recursive: true });
   log(`Batch: ${config.repeat} repeats, ${config.concurrency} at a time → ${batchDir}`);
   let sharedSpec: ReviewSpec | undefined;
-  if (config.reviewRounds > 0 || config.criteria) {
+  if (config.reviewRounds > 0 || config.criteria || config.analystModel) {
     const spec = await extractRequirements(specSource(config), config.checkerModel);
     if (!spec) throw new Error("Review: could not extract the task's requirements; not running the batch without a shared review standard");
     sharedSpec = spec;

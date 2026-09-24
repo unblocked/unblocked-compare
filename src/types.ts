@@ -107,6 +107,8 @@ export type Met = "met" | "partial" | "unmet";
 export interface QualityRequirement {
   index?: number;
   requirement: string;
+  // Set when the revision pass restated this requirement: the task's wording.
+  revisedFrom?: string;
   baseline: { status: Met; evidence: string };
   unblocked: { status: Met; evidence: string };
 }
@@ -179,7 +181,10 @@ export interface ReviewComment { file: string; severity: "must-fix" | "should-fi
 export interface ReviewRequirement { index?: number; requirement: string; status: "met" | "partial" | "unmet" | "waived"; note: string }
 
 export interface ReviewAdjudication { index: number; waived: boolean; excludes?: string; reason: string; disputedBy: Condition; round: number }
-export interface ReviewSpec { model: string; costUsd: number; requirements: string[]; adjudications: ReviewAdjudication[] }
+// A requirement restated to the team's intent, from evidence an agent found
+// (see revision.ts). Applies to both agents.
+export interface RequirementRevision { index: number; revised: string; reason: string; quote: string; foundBy: Condition }
+export interface ReviewSpec { model: string; costUsd: number; requirements: string[]; adjudications: ReviewAdjudication[]; revisions?: RequirementRevision[]; revisionCostUsd?: number }
 
 export interface ReviewPass {
   round: number;

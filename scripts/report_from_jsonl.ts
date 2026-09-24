@@ -16,6 +16,8 @@ import { discountEngineTime, ENGINE_CALL_CAP_MS } from "../src/engine/discount.t
 import { attribute, buildWalk, rollup } from "../src/attribution.ts";
 import { applyTieBreaker, assessQuality } from "../src/quality.ts";
 import { assessImpact } from "../src/impact.ts";
+import { reviseRequirements } from "../src/revision.ts";
+import { extractRequirements } from "../src/review.ts";
 import { economics } from "../src/economics.ts";
 import { extractUnblockedCalls } from "../src/runner.ts";
 import type { ArmResult, ComparisonResult, Condition, UnblockedCall } from "../src/types.ts";
@@ -169,7 +171,16 @@ const result: ComparisonResult = {
 
 const killed = [baseline, unblocked].filter(a => a.run.killedReason);
 if (killed.length) console.error(`⚠ ${killed.map(a => `${a.condition} was killed (${a.run.killedReason})`).join("; ")}: judge and impact are not re-run for an unfinished comparison`);
-if (judgeModel && !killed.length) result.quality = (await assessQuality(result, judgeModel)) ?? orig?.quality;
+if (judgeModel && !killed.length) {
+  // Re-judging runs the revision pass first, on a fixed requirement list
+  // (extracted now for runs made before every run had one).
+  result.reviewSpec ??= (await extractRequirements(result.criteria ? `${task}\n\nAcceptance criteria:\n${result.criteria}` : task, "sonnet")) ?? undefined;
+  if (result.reviewSpec) {
+    const rev = await reviseRequirements(result, judgeModel);
+    if (rev) { result.reviewSpec.revisions = rev.revisions; result.reviewSpec.revisionCostUsd = rev.costUsd; }
+  }
+  result.quality = (await assessQuality(result, judgeModel)) ?? orig?.quality;
+}
 else if (orig?.quality) result.quality = orig.quality;
 
 result.economics = economics(result);
@@ -179,7 +190,7 @@ else if (orig?.impact) result.impact = orig.impact;
 applyTieBreaker(result);
 
 const reviewCost = (a: ArmResult) => (a.review?.passes ?? []).reduce((s, p) => s + p.reviewCostUsd, 0);
-result.analysisCostUsd = (baseline.attribution?.analystCostUsd ?? 0) + (unblocked.attribution?.analystCostUsd ?? 0) + (result.quality?.judgeCostUsd ?? 0) + (result.impact?.costUsd ?? 0) + reviewCost(baseline) + reviewCost(unblocked) + (result.reviewSpec?.costUsd ?? 0);
+result.analysisCostUsd = (baseline.attribution?.analystCostUsd ?? 0) + (unblocked.attribution?.analystCostUsd ?? 0) + (result.quality?.judgeCostUsd ?? 0) + (result.impact?.costUsd ?? 0) + reviewCost(baseline) + reviewCost(unblocked) + (result.reviewSpec?.costUsd ?? 0) + (result.reviewSpec?.revisionCostUsd ?? 0);
 
 // Next to the run it regenerates, when given its result.json.
 const outDir = thirdArg?.endsWith(".json") ? path.join(path.dirname(path.resolve(thirdArg)), "regenerated") : path.join(process.cwd(), "results", "regenerated");

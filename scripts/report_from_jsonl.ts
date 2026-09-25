@@ -203,7 +203,9 @@ const reviewCost = (a: ArmResult) => (a.review?.passes ?? []).reduce((s, p) => s
 result.analysisCostUsd = (baseline.attribution?.analystCostUsd ?? 0) + (unblocked.attribution?.analystCostUsd ?? 0) + (result.quality?.judgeCostUsd ?? 0) + (result.impact?.costUsd ?? 0) + reviewCost(baseline) + reviewCost(unblocked) + (result.reviewSpec?.costUsd ?? 0) + (result.reviewSpec?.revisionCostUsd ?? 0) + (result.contextEffect?.tldr?.costUsd ?? 0);
 
 // Next to the run it regenerates, when given its result.json.
-const outDir = thirdArg?.endsWith(".json") ? path.join(path.dirname(path.resolve(thirdArg)), "regenerated") : path.join(process.cwd(), "results", "regenerated");
+// (re-rendering a regenerated result writes back into its own folder).
+const resultDir = thirdArg?.endsWith(".json") ? path.dirname(path.resolve(thirdArg)) : null;
+const outDir = resultDir ? (path.basename(resultDir) === "regenerated" ? resultDir : path.join(resultDir, "regenerated")) : path.join(process.cwd(), "results", "regenerated");
 fs.mkdirSync(outDir, { recursive: true });
 printReport(result);
 writeJsonResult(result, outDir);

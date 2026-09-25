@@ -3,7 +3,7 @@ import path from "node:path";
 import type { ArmResult, ComparisonResult, Met, ToolCall } from "./types.ts";
 import { formatCost, formatDiffSummary, formatDuration, formatTokens, modelCost, padLeft, padRight, priceFor, totalTokens, uncachedTokens } from "./util.ts";
 import { AGENTS, type AgentName } from "./agents/index.ts";
-import { reconcile, type Reconciliation, type Totals } from "./context-effect.ts";
+import { reconcile, type Totals } from "./context-effect.ts";
 import { BATCH_CSS, COUNT_UP, FONTS, REPORT_CSS } from "./report-style.ts";
 import type { TokenUsage } from "./types.ts";
 import { unblockedCommand } from "./unblocked-cli.ts";
@@ -427,28 +427,33 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   const typeset = (t: string) => escapeHtml(t).replace(/\s*-&gt;\s*/g, " &rarr; ").replace(/(^|[\s(\/])-(?=\$?\d)/g, "$1&minus;");
   const usd2 = (n: number) => `$${n.toFixed(2)}`;
   const pctHtml = (s: string) => s.replace(/^-/, "&minus;");
-  const splitBar = (r: Reconciliation) => {
-    const parts: [string, number][] = [["influence", r.influence], ["own", r.ownMistakes], ["other", r.other]];
-    const side = (neg: boolean) => parts.filter(([, v]) => (neg ? v < 0 : v > 0));
-    const sum = (neg: boolean) => side(neg).reduce((t, [, v]) => t + Math.abs(v), 0);
-    const scale = Math.max(sum(true), sum(false), Math.abs(r.measured)) || 1;
-    const segs = (neg: boolean) => side(neg).map(([k, v]) => `<span class="seg seg-${k}" style="width: ${((Math.abs(v) / scale) * 100).toFixed(1)}%"></span>`).join("");
-    return `<div class="split" aria-hidden="true"><div class="split-neg">${segs(true)}</div><div class="split-pos">${segs(false)}</div><span class="split-zero"></span><span class="split-total" style="left: ${(50 + (r.measured / scale) * 50).toFixed(1)}%"></span></div>`;
+  // One bar per arm on a shared scale, split by where that arm spent it:
+  // context work (the Baseline working without the context, or the context
+  // arm getting and using it), the agent's own mistakes, and other work.
+  const armBars = (key: keyof Totals, fmt: (n: number) => string) => {
+    const e = ce!;
+    const part = (arm: "baseline" | "unblocked", ctx: boolean) => e.episodes.filter(x => x.arm === arm && (x.cause === "context") === ctx).reduce((t, x) => t + x[key], 0);
+    const max = Math.max(e.baseline[key], e.unblocked[key]) || 1;
+    const seg = (cls: string, v: number, title: string) => v > 0
+      ? `<span class="ab-seg ab-${cls}" style="width: ${((v / max) * 100).toFixed(1)}%" title="${title}: ${fmt(v)}">${v / max >= 0.02 + 0.035 * fmt(v).length ? fmt(v) : ""}</span>` : "";
+    const bar = (arm: "baseline" | "unblocked", name: string) => {
+      const total = e[arm][key], c = part(arm, true), o = part(arm, false);
+      return `<div class="ab-row"><span class="ab-name">${name}</span><div class="ab-track">${seg("other", Math.max(0, total - c - o), "Other work")}${seg("context", c, arm === "baseline" ? "Work for lack of the context" : "Getting and using the context")}${seg("own", o, "Own mistakes")}<span class="ab-total">${fmt(total)}</span></div></div>`;
+    };
+    return `<div class="armbars">${bar("baseline", "Baseline")}${bar("unblocked", escapeHtml(L.short))}</div>`;
   };
-  const dir = (v: number) => (v < 0 ? "down" : "up");
   const resultRow = (label: string, key: keyof Totals, fmt: (n: number) => string) => {
     const e = ce!;
     const infl = pctChange(e.adjustedBaseline[key], e.adjustedUnblocked[key]);
     const raw = pctChange(e.baseline[key], e.unblocked[key]);
     const cls = infl === "N/A" || /^[+-]?0%$/.test(infl) ? "" : e.adjustedUnblocked[key] < e.adjustedBaseline[key] ? " better" : " worse";
     const rawCls = raw === "N/A" || /^[+-]?0%$/.test(raw) ? "" : e.unblocked[key] < e.baseline[key] ? " better" : " worse";
-    const r = reconcile(e, key);
     return `
       <tr>
         <th scope="row">${label}</th>
         <td><span class="fig${cls}">${pctHtml(infl)}</span><span class="range">${fmt(e.adjustedBaseline[key])} to ${fmt(e.adjustedUnblocked[key])}</span></td>
         <td><span class="fig measured${rawCls}">${pctHtml(raw)}</span><span class="range">${fmt(e.baseline[key])} to ${fmt(e.unblocked[key])}</span></td>
-        <td>${splitBar(r)}<div class="split-text"><span>${signed(r.measured, fmt)} measured =</span><span><i class="key key-influence ${dir(r.influence)}"></i>${signed(r.influence, fmt)} context's influence</span><span><i class="key key-own ${dir(r.ownMistakes)}"></i>${signed(r.ownMistakes, fmt)} agents' own mistakes</span><span><i class="key key-other ${dir(r.other)}"></i>${signed(r.other, fmt)} other work</span></div></td>
+        <td>${armBars(key, fmt)}</td>
       </tr>`;
   };
   const causeLabel = { context: "context", agent: "agent, not context", environment: "environment" } as const;
@@ -549,15 +554,21 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   <section class="section summary">
     <h2 class="section-title">What drove it</h2>
     ${ce.tldr?.bullets.length ? `<ul class="points">${ce.tldr.bullets.map(b => `<li>${typeset(b)}</li>`).join("")}</ul>` : ""}
-    <h2 class="section-title">How each difference splits</h2>
+    <h2 class="section-title">Where the difference comes from</h2>
     <table class="results">
-      <thead><tr><th></th><th>Context's influence</th><th>Measured</th><th>Measured = context's influence + agents' own mistakes + other work</th></tr></thead>
+      <thead><tr><th></th><th>Context's influence</th><th>Measured</th><th>Where each arm spent it</th></tr></thead>
       <tbody>
         ${resultRow("Cost", "costUsd", usd2)}
         ${resultRow("Time", "durationMs", formatDuration)}
         ${resultRow("Tokens", "tokens", formatTokens)}
       </tbody>
     </table>
+    <div class="ab-legend">
+      <span><i class="ab-key ab-other"></i>Other work</span>
+      <span><i class="ab-key ab-context"></i>Context work: the Baseline working without the context, or the ${escapeHtml(L.short)} arm getting and using it</span>
+      <span><i class="ab-key ab-own"></i>The agent's own mistakes</span>
+    </div>
+    <p class="section-note">Context's influence: the Baseline's total with its blue segment swapped for the ${escapeHtml(L.short)} arm's. Own mistakes and other work are left as they are.</p>
     ${ce.episodes.length ? `<details class="ledger"><summary>How these numbers are worked out (${ce.episodes.length} episodes)</summary>
       ${workings()}
       <table class="tool-table">

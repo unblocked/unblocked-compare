@@ -55,4 +55,10 @@ test("outwardAction", () => {
   expect(outwardAction("gh api repos/o/r/pulls/1/files")).toBeNull();
   expect(outwardAction("gh api -X GET search/issues -f q=x")).toBeNull();
   expect(outwardAction("git log --oneline")).toBeNull();
+  // Reads and quoted text are not writes.
+  expect(outwardAction(`grep -rn "git push" .github/`)).toBeNull();
+  expect(outwardAction(`echo 'run gh pr create later'`)).toBeNull();
+  expect(outwardAction(`gh api graphql -f query='{ repository(owner:"o",name:"r") { pullRequest(number:1) { title } } }'`)).toBeNull();
+  expect(outwardAction(`gh api graphql -f query='mutation { addComment(input:{}) { clientMutationId } }'`)).toBe("gh api graphql mutation");
+  expect(outwardAction("npm test && git push origin HEAD")).toBe("git push");
 });

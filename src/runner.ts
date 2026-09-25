@@ -414,8 +414,11 @@ export async function run(config: Config, outDirOverride?: string, sharedSpec?: 
   // A fixed requirement list whenever the analysis runs: the revision pass and
   // the judge grade against it.
   if (config.reviewRounds > 0 || config.criteria || config.analystModel) {
-    ctx.reviewSpec = sharedSpec ? { ...sharedSpec, adjudications: [], costUsd: 0 } : await extractRequirements(specSource(config), config.checkerModel);
-    if (!ctx.reviewSpec) throw new Error("Review: could not extract the task's requirements; not running the arms without a shared review standard");
+    ctx.reviewSpec = sharedSpec ? { ...sharedSpec, adjudications: [], costUsd: 0 } : (await extractRequirements(specSource(config), config.checkerModel)) ?? null;
+    // Only --review and --criteria need the list before the arms run; without
+    // them the judge extracts its own, as it did before every run had one.
+    if (!ctx.reviewSpec && (config.reviewRounds > 0 || config.criteria)) throw new Error("Review: could not extract the task's requirements; not running the arms without a shared review standard");
+    if (!ctx.reviewSpec) log("Requirements: extraction failed; the judge will extract its own and the revision pass is skipped");
   }
   const reviewSpec = ctx.reviewSpec;
 
@@ -518,9 +521,11 @@ export async function runBatch(config: Config): Promise<{ batchDir: string; resu
   let sharedSpec: ReviewSpec | undefined;
   if (config.reviewRounds > 0 || config.criteria || config.analystModel) {
     const spec = await extractRequirements(specSource(config), config.checkerModel);
-    if (!spec) throw new Error("Review: could not extract the task's requirements; not running the batch without a shared review standard");
-    sharedSpec = spec;
-    fs.writeFileSync(path.join(batchDir, "requirements.json"), JSON.stringify(spec, null, 2));
+    if (!spec && (config.reviewRounds > 0 || config.criteria)) throw new Error("Review: could not extract the task's requirements; not running the batch without a shared review standard");
+    if (spec) {
+      sharedSpec = spec;
+      fs.writeFileSync(path.join(batchDir, "requirements.json"), JSON.stringify(spec, null, 2));
+    }
   }
   const results: (ComparisonResult | null)[] = new Array(config.repeat).fill(null);
   let next = 0;

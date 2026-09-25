@@ -429,7 +429,6 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   const pctHtml = (s: string) => s.replace(/^-/, "&minus;");
   // Plain comparison: one bar per arm, then at most three short lines saying
   // what made the difference, green when it saved and red when it cost more.
-  const without = L.short === "Unblocked" ? "Without Unblocked" : "Without context";
   const plain = (n: number, fmt: (n: number) => string, unit: string) => `${fmt(Math.abs(n))}${unit}`;
   // A waterfall: start without the context, take off or add what the context
   // did, then what the agent did on its own (its mistakes and all other work
@@ -461,9 +460,9 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
       <div class="cmp">
         <h3 class="cmp-label">${label}</h3>
         <div class="wf">
-          ${row(without, "base", 0, bv, fmt(bv))}
+          ${row("Baseline", "base", 0, bv, fmt(bv))}
           ${stepRows}
-          ${row(escapeHtml(L.arm), "ctx", 0, uv, `${fmt(uv)}${rawCls ? ` <em class="${rawCls}">${pctHtml(raw)} overall</em>` : ""}`)}
+          ${row("End result", "ctx", 0, uv, `${fmt(uv)}${rawCls ? ` <em class="${rawCls}">${pctHtml(raw)} overall</em>` : ""}`)}
         </div>
       </div>`;
   };
@@ -565,7 +564,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   <section class="section summary">
     <h2 class="section-title">What drove it</h2>
     ${ce.tldr?.bullets.length ? `<ul class="points">${ce.tldr.bullets.map(b => `<li>${typeset(b)}</li>`).join("")}</ul>` : ""}
-    <h2 class="section-title">${without} vs ${escapeHtml(L.arm.replace(/^With/, "with"))}</h2>
+    <h2 class="section-title">What changed the numbers</h2>
     <div class="cmps">
       ${compareBlock("Cost", "costUsd", usd2)}
       ${compareBlock("Time", "durationMs", formatDuration)}

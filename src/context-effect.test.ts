@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { computeContextEffect } from "./context-effect.ts";
+import { computeContextEffect, reconcile } from "./context-effect.ts";
 import type { ComparisonResult } from "./types.ts";
 
 const turn = (n: number, costUsd: number, durationMs: number, label: "work" | "verify" | "housekeeping" = "work") =>
@@ -26,4 +26,10 @@ test("episodes are summed from core turns; the context effect is baseline plus c
   expect(e.adjustedUnblocked.costUsd).toBeCloseTo(0.5);
   expect(e.adjustedUnblocked.durationMs).toBe(80_000 + 20_000 - 20_000);
   expect(e.unblocked.tokens).toBe(3000);
+  // The split adds up to the measured difference exactly.
+  for (const key of ["costUsd", "durationMs", "tokens"] as const) {
+    const r = reconcile(e, key);
+    expect(r.influence + r.ownMistakes + r.other).toBeCloseTo(r.measured);
+  }
+  expect(reconcile(e, "costUsd").ownMistakes).toBeCloseTo(0.8);
 });

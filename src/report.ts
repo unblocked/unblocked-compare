@@ -3,6 +3,7 @@ import path from "node:path";
 import type { ArmResult, ComparisonResult, Met, ToolCall } from "./types.ts";
 import { formatCost, formatDiffSummary, formatDuration, formatTokens, modelCost, padLeft, padRight, priceFor, totalTokens, uncachedTokens } from "./util.ts";
 import { AGENTS, type AgentName } from "./agents/index.ts";
+import { reconcile, type Totals } from "./context-effect.ts";
 import type { TokenUsage } from "./types.ts";
 import { unblockedCommand } from "./unblocked-cli.ts";
 
@@ -417,27 +418,53 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   // TL;DR: the headline numbers, raw and with confounders removed, and a short
   // plain-language account of them and of the context's role.
   const ce = result.contextEffect;
-  const tldrCard = (label: string, raw: [number, number], adj: [number, number], fmt: (n: number) => string) => {
-    const pct = pctChange(raw[0], raw[1]);
-    const cls = pct === "N/A" || /^[+-]?0%$/.test(pct) ? " neutral" : raw[1] < raw[0] ? " positive" : " negative";
-    const adjChanged = Math.abs(adj[1] - raw[1]) > 1e-9;
+  // Headline: the context's influence. Detail: the measured difference, and
+  // how it splits (the parts add up to the measured difference exactly).
+  const signed = (n: number, fmt: (n: number) => string) => `${n < 0 ? "&minus;" : "+"}${fmt(Math.abs(n))}`;
+  const tldrCard = (label: string, key: keyof Totals, fmt: (n: number) => string) => {
+    const e = ce!;
+    const infl = pctChange(e.adjustedBaseline[key], e.adjustedUnblocked[key]);
+    const raw = pctChange(e.baseline[key], e.unblocked[key]);
+    const better = e.adjustedUnblocked[key] < e.adjustedBaseline[key];
+    const cls = infl === "N/A" || /^[+-]?0%$/.test(infl) ? " neutral" : better ? " positive" : " negative";
+    const r = reconcile(e, key);
     return `
     <div class="hero-card${cls}">
       <div class="hero-label">${label}</div>
-      <div class="hero-value${cls}">${pct}</div>
-      <div class="hero-detail">Baseline ${fmt(raw[0])} &rarr; ${escapeHtml(L.short)} ${fmt(raw[1])}</div>
-      ${adjChanged ? `<div class="hero-detail tldr-adjusted">Context effect only: <b>${pctChange(adj[0], adj[1])}</b> (${fmt(adj[0])} &rarr; ${fmt(adj[1])})</div>` : ""}
+      <div class="hero-value${cls}">${infl}</div>
+      <div class="hero-detail">context's influence (${fmt(e.adjustedBaseline[key])} &rarr; ${fmt(e.adjustedUnblocked[key])})</div>
+      <div class="hero-detail tldr-adjusted">Measured: <b>${raw}</b> (${fmt(e.baseline[key])} &rarr; ${fmt(e.unblocked[key])})</div>
+      <div class="hero-detail tldr-split">${signed(r.measured, fmt)} measured = ${signed(r.influence, fmt)} context's influence ${signed(r.ownMistakes, fmt)} models' own mistakes ${signed(r.other, fmt)} other work</div>
     </div>`;
   };
   const causeLabel = { context: "context", agent: "agent (not context)", environment: "environment" } as const;
+  const qualityCard = () => {
+    const q = result.quality;
+    if (!q) return "";
+    const better = q.verdict.better;
+    const cls = better === "unblocked" ? " positive" : better === "baseline" ? " negative" : " neutral";
+    const score = (c: "baseline" | "unblocked") => {
+      const reqs = q.requirements.map(r => r[c].status);
+      const met = reqs.filter(s => s === "met").length, partial = reqs.filter(s => s === "partial").length;
+      return `${met}/${reqs.length} met${partial ? `, ${partial} partial` : ""}`;
+    };
+    return `
+    <div class="hero-card${cls}">
+      <div class="hero-label">Quality</div>
+      <div class="hero-value${cls}" style="font-size: 32px; line-height: 1.5;">${better === "tie" ? "Tie" : better === "unblocked" ? escapeHtml(L.short) : "Baseline"}</div>
+      <div class="hero-detail">Requirements: Baseline ${score("baseline")} &middot; ${escapeHtml(L.short)} ${score("unblocked")}</div>
+      ${q.verdict.tieBreaker?.applied ? `<div class="hero-detail tldr-adjusted">blinded tie, broken by a context-led discovery</div>` : ""}
+    </div>`;
+  };
   const tldrSection = !ce ? "" : `
   <div class="section tldr">
     <div class="section-title">Summary <span class="section-sub">quality: ${result.quality ? escapeHtml(result.quality.verdict.better === "tie" ? "tie" : result.quality.verdict.better === "unblocked" ? `${L.short} better` : "Baseline better") : "not judged"}</span></div>
     ${ce.tldr ? `<div class="tldr-headline">${escapeHtml(ce.tldr.headline)}</div>` : ""}
-    <div class="hero-grid hero-3">
-      ${tldrCard("Cost", [ce.baseline.costUsd, ce.unblocked.costUsd], [ce.adjustedBaseline.costUsd, ce.adjustedUnblocked.costUsd], formatCost)}
-      ${tldrCard("Time", [ce.baseline.durationMs, ce.unblocked.durationMs], [ce.adjustedBaseline.durationMs, ce.adjustedUnblocked.durationMs], formatDuration)}
-      ${tldrCard("Tokens", [ce.baseline.tokens, ce.unblocked.tokens], [ce.adjustedBaseline.tokens, ce.adjustedUnblocked.tokens], formatTokens)}
+    <div class="hero-grid hero-4">
+      ${qualityCard()}
+      ${tldrCard("Cost", "costUsd", formatCost)}
+      ${tldrCard("Time", "durationMs", formatDuration)}
+      ${tldrCard("Tokens", "tokens", formatTokens)}
     </div>
     ${ce.tldr?.bullets.length ? `<ul class="tldr-bullets">${ce.tldr.bullets.map(b => `<li>${escapeHtml(b)}</li>`).join("")}</ul>` : ""}
     ${ce.episodes.length ? `<details class="tldr-episodes"><summary>What made the arms differ (${ce.episodes.length} episodes)</summary>
@@ -445,7 +472,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
         <thead><tr><th>Arm</th><th>Turns</th><th>Cause</th><th>What</th><th>Time</th><th>Cost</th><th>Tokens</th></tr></thead>
         <tbody>${ce.episodes.map(e => `<tr${e.cause === "context" ? ` class="highlight-row"` : ""}><td>${e.arm === "baseline" ? "Baseline" : escapeHtml(L.short)}</td><td>T${e.fromTurn}&ndash;T${e.toTurn}</td><td>${causeLabel[e.cause]}</td><td>${escapeHtml(e.what)}</td><td>${formatDuration(e.durationMs)}</td><td>${formatCost(e.costUsd)}</td><td>${formatTokens(e.tokens)}</td></tr>`).join("")}</tbody>
       </table>
-      <div class="section-note" style="margin-top: 8px;">Core work, housekeeping removed. Episodes and causes come from the un-blinded impact pass; their time, cost and tokens are summed from the per-message figures. "Context effect only" is the Baseline plus the context-driven differences (context episodes in the ${escapeHtml(L.short)} arm, minus the Baseline's episodes caused by lacking the context): agent and environment episodes are confounders and drop out.</div>
+      <div class="section-note" style="margin-top: 8px;">Core work, housekeeping removed. Episodes and causes come from the un-blinded impact pass; their time, cost and tokens are summed from the per-message figures. "Context's influence" is the Baseline plus the differences the context influenced, for better or worse: turns it shaped in the ${escapeHtml(L.short)} arm, minus the Baseline's work for lack of it. Choices each model made on its own (agent) and environment noise drop out of both arms.</div>
     </details>` : ""}
   </div>`;
 
@@ -726,6 +753,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   .tldr-headline { font-size: 19px; font-weight: 600; line-height: 1.5; margin: -4px 0 20px; }
   .tldr .hero-grid { margin-bottom: 20px; }
   .tldr-adjusted { margin-top: 6px; font-size: 13px; }
+  .tldr-split { margin-top: 6px; font-size: 11px; line-height: 1.5; opacity: 0.85; }
   .tldr-bullets { margin: 0 0 12px 20px; font-size: 15px; line-height: 1.7; }
   .tldr-episodes summary { cursor: pointer; color: var(--text-muted); font-size: 13px; margin-bottom: 10px; }
   .full-report { margin-bottom: 40px; }
@@ -908,6 +936,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   .diff-del { color: var(--red); background: rgba(239, 68, 68, 0.08); display: inline-block; width: 100%; }
 
   .hero-3 { grid-template-columns: repeat(3, 1fr); }
+  .hero-4 { grid-template-columns: repeat(4, 1fr); }
   .section-note { font-size: 13px; color: var(--text-muted); margin: -8px 0 16px; line-height: 1.6; }
   .section-sub { font-size: 12px; font-weight: 500; color: var(--text-muted); margin-left: 8px; }
   .ledger { margin-top: 12px; }
@@ -925,7 +954,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   .finding { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; font-size: 13px; }
   .finding-arm { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-right: 8px; }
   .finding-arm.unblocked { color: var(--accent-light); } .finding-arm.baseline { color: var(--text-muted); }
-  @media (max-width: 768px) { .hero-3 { grid-template-columns: 1fr; } }
+  @media (max-width: 768px) { .hero-3, .hero-4 { grid-template-columns: 1fr; } }
 
   .footer {
     text-align: center;
@@ -980,11 +1009,11 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   <div class="section">
     <div class="section-title">1 · Core task work</div>
     <div class="section-note">Reading, deciding, coding, testing. Housekeeping removed from both arms. Time is model time; tool wait is in section 2.</div>
-    <div class="hero-grid hero-3">
+    ${ce ? "" : `<div class="hero-grid hero-3">
       ${heroCard("Cost", b.attribution!.core.costUsd, u.attribution!.core.costUsd, formatCost)}
       ${hasCoreTiming ? heroCard("Model time", coreModelTimeMs(b), coreModelTimeMs(u), formatDuration) : ""}
       ${heroCard("Output tokens", b.attribution!.core.outputTokens, u.attribution!.core.outputTokens, formatTokens)}
-    </div>
+    </div>`}
     ${barPair("Cost", b.attribution!.core.costUsd, u.attribution!.core.costUsd, maxCost, formatCost)}
     ${hasCoreTiming ? barPair("Model time", coreModelTimeMs(b), coreModelTimeMs(u), maxTime, formatDuration, "thinking + generation; the headline time") : ""}
     ${hasCoreTiming ? barPair("Tool wait", coreToolTimeMs(b), coreToolTimeMs(u), maxTime, formatDuration, "tests, CI, MCP, shell — depends on what each agent chose to run; see section 2") : ""}
@@ -1239,8 +1268,11 @@ function tldrLines(result: ComparisonResult): string[] {
   const ce = result.contextEffect;
   if (!ce) return [];
   const pct = (a: number, b: number) => (a ? `${b >= a ? "+" : ""}${Math.round(((b - a) / a) * 100)}%` : "n/a");
-  const row = (name: string, raw: [number, number], adj: [number, number], fmt: (n: number) => string) =>
-    `  ${padRight(name, 8)}${padLeft(fmt(raw[0]), 10)} → ${padLeft(fmt(raw[1]), 10)} ${padLeft(pct(raw[0], raw[1]), 6)}   context effect only ${pct(adj[0], adj[1])}`;
+  const sg = (n: number, fmt: (n: number) => string) => `${n < 0 ? "-" : "+"}${fmt(Math.abs(n))}`;
+  const row = (name: string, raw: [number, number], adj: [number, number], fmt: (n: number) => string) => {
+    const r = reconcile(ce, name === "Cost" ? "costUsd" : name === "Time" ? "durationMs" : "tokens");
+    return `  ${padRight(name, 8)}context's influence ${padLeft(pct(adj[0], adj[1]), 5)}  measured ${padLeft(pct(raw[0], raw[1]), 5)} = ${sg(r.influence, fmt)} influence ${sg(r.ownMistakes, fmt)} own mistakes ${sg(r.other, fmt)} other`;
+  };
   return [
     "",
     ...wrap("SUMMARY" + (ce.tldr ? `: ${ce.tldr.headline}` : ""), W - 8).map(l => `  ${l}`),

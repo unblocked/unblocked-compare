@@ -64,6 +64,19 @@ export function computeContextEffect(result: ComparisonResult): ContextEffect | 
   return { baseline: b, unblocked: u, adjustedBaseline: b, adjustedUnblocked: add(b, sub(contextDriven("unblocked"), contextDriven("baseline"))), episodes };
 }
 
+// How the measured difference splits, exactly: the context's influence, the
+// models' own mistakes and environment noise (each arm's agent and
+// environment episodes), and the rest (ordinary work both arms did, in
+// different amounts, that no episode covers).
+export interface Reconciliation { measured: number; influence: number; ownMistakes: number; other: number }
+export function reconcile(e: ContextEffect, key: keyof Totals): Reconciliation {
+  const own = (arm: Condition) => e.episodes.filter(x => x.arm === arm && x.cause !== "context").reduce((s, x) => s + x[key], 0);
+  const measured = e.unblocked[key] - e.baseline[key];
+  const influence = e.adjustedUnblocked[key] - e.adjustedBaseline[key];
+  const ownMistakes = own("unblocked") - own("baseline");
+  return { measured, influence, ownMistakes, other: measured - influence - ownMistakes };
+}
+
 const pct = (from: number, to: number) => (from ? `${to >= from ? "+" : ""}${Math.round(((to - from) / from) * 100)}%` : "n/a");
 const money = (n: number) => `${n < 0 ? "-" : ""}$${Math.abs(n).toFixed(2)}`;
 const mins = (ms: number) => `${ms < 0 ? "-" : ""}${(Math.abs(ms) / 60000).toFixed(1)} min`;
@@ -73,7 +86,7 @@ export function describeNumbers(e: ContextEffect, label: string): string {
     `${name}: cost ${money(b.costUsd)} -> ${money(u.costUsd)} (${pct(b.costUsd, u.costUsd)}); time ${mins(b.durationMs)} -> ${mins(u.durationMs)} (${pct(b.durationMs, u.durationMs)}); tokens ${formatTokens(b.tokens)} -> ${formatTokens(u.tokens)} (${pct(b.tokens, u.tokens)})`;
   return [
     line(`RAW (baseline -> ${label})`, e.baseline, e.unblocked),
-    line(`CONTEXT EFFECT ONLY, confounders removed (baseline -> baseline plus the context-driven differences)`, e.adjustedBaseline, e.adjustedUnblocked),
+    line(`CONTEXT'S INFLUENCE, each model's own mistakes excluded (baseline -> baseline plus the context-influenced differences)`, e.adjustedBaseline, e.adjustedUnblocked),
     "EPISODES:",
     ...e.episodes.map(x => `- ${x.arm === "baseline" ? "baseline" : label} T${x.fromTurn}-T${x.toTurn} [${x.cause}] ${x.what}: ${mins(x.durationMs)}, ${money(x.costUsd)}, ${formatTokens(x.tokens)} tokens`),
   ].join("\n");
@@ -91,8 +104,8 @@ export async function writeTldr(result: ComparisonResult, e: ContextEffect, labe
   const q = result.quality;
   const p = `Write the TL;DR at the top of a report comparing a coding agent on one task without and with ${label === "Unblocked" ? "Unblocked (a context engine that searches the organisation's PRs, docs, chat and issues)" : "a context engine"}. The reader is a busy engineering leader. Use VERY clear, VERY concise language: no jargon, no hedging, no adjectives that are not numbers.
 
-- headline: one sentence, at most 25 words: the cost, time and token difference ${label === "Unblocked" ? "Unblocked" : "the context"} made, and the quality outcome. Lead with the CONTEXT EFFECT ONLY figures when confounders changed the picture, and say the raw gap came from them.
-- bullets: at most 4, each at most 22 words. Explain what drove the cost, time and token numbers, and the role the context played: what it supplied, whether the agent used it, and what differences were NOT caused by it (confounders). Quote numbers exactly as given below. Do not invent facts.
+- headline: one sentence, at most 25 words: the quality outcome and the cost, time and token difference ${label === "Unblocked" ? "Unblocked" : "the context"} made. Lead with the CONTEXT'S INFLUENCE figures when the models' own mistakes changed the picture, and say so.
+- bullets: at most 4, each at most 22 words. The FIRST bullet explains the quality outcome: which requirement or defect decided it, or why it tied, and whether the context made the difference. The others explain what drove the cost, time and token numbers, and the context's influence: what it supplied, which turns it shaped for better or worse, and which differences were the models' own choices it did not influence. Quote numbers exactly as given below. Do not invent facts.
 
 Name the arms "Baseline" and "${label}".
 
@@ -100,7 +113,8 @@ Name the arms "Baseline" and "${label}".
 ${describeNumbers(e, label)}
 
 === QUALITY (blinded judge) ===
-${q ? `${q.verdict.better}: ${q.verdict.rationale}` : "(no verdict)"}
+${q ? `${q.verdict.better}: ${q.verdict.rationale}${q.verdict.tieBreaker?.applied ? ` (blinded tie, broken by the tie-breaker: ${q.verdict.tieBreaker.reason})` : ""}
+Requirements: ${q.requirements.map(r => `"${r.requirement}" Baseline ${r.baseline.status}, ${label} ${r.unblocked.status}`).join("; ")}` : "(no verdict)"}
 
 === WHAT THE CONTEXT DID (un-blinded analysis) ===
 ${im.impact.summary}

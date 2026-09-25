@@ -431,8 +431,9 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   // what made the difference, green when it saved and red when it cost more.
   const without = L.short === "Unblocked" ? "Without Unblocked" : "Without context";
   const plain = (n: number, fmt: (n: number) => string, unit: string) => `${fmt(Math.abs(n))}${unit}`;
-  // A waterfall: start without the context, take off or add each part, end
-  // with it. Green takes away, red adds; every bar has its label in its row.
+  // A waterfall: start without the context, take off or add what the context
+  // did, then what the agent did on its own (its mistakes and all other work
+  // the context did not influence), and end with it. Green takes away, red adds; every bar has its label in its row.
   const compareBlock = (label: string, key: keyof Totals, fmt: (n: number) => string) => {
     const e = ce!;
     const bv = e.baseline[key], uv = e.unblocked[key];
@@ -441,8 +442,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
     const small = (v: number) => Math.abs(v) < Math.max(bv, uv) * 0.01;
     const steps: [string, string, number, boolean][] = ([
       [`${ctxName} saved`, `${ctxName} added`, r.influence, true],
-      ["Fewer mistakes saved", "More mistakes added", r.ownMistakes, false],
-      ["Other work saved", "Other work added", r.other, false],
+      ["Agent's own choices saved", "Agent's own choices added", r.ownMistakes + r.other, false],
     ] as [string, string, number, boolean][]).filter(([, , v]) => !small(v));
     let run = bv, peak = bv;
     for (const [, , v] of steps) { run += v; peak = Math.max(peak, run); }

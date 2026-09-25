@@ -104,10 +104,14 @@ export async function writeTldr(result: ComparisonResult, e: ContextEffect, labe
   const q = result.quality;
   const p = `Write the TL;DR at the top of a report comparing a coding agent on one task without and with ${label === "Unblocked" ? "Unblocked (a context engine that searches the organisation's PRs, docs, chat and issues)" : "a context engine"}. The reader is a busy engineering leader. Use VERY clear, VERY concise language: no jargon, no hedging, no adjectives that are not numbers.
 
-- headline: one sentence, at most 25 words: the quality outcome and the cost, time and token difference ${label === "Unblocked" ? "Unblocked" : "the context"} made. Lead with the CONTEXT'S INFLUENCE figures when the models' own mistakes changed the picture, and say so.
+- headline: one sentence, at most 25 words: the quality outcome and the cost, time and token difference ${label === "Unblocked" ? "Unblocked's" : "the"} context made. Lead with the CONTEXT'S INFLUENCE figures when the models' own mistakes changed the picture, and say so.
 - bullets: at most 4, each at most 22 words. The FIRST bullet explains the quality outcome: which requirement or defect decided it, or why it tied, and whether the context made the difference. The others explain what drove the cost, time and token numbers, and the context's influence: what it supplied, which turns it shaped for better or worse, and which differences were the models' own choices it did not influence. Quote numbers exactly as given below. Do not invent facts.
 
-Name the arms "Baseline" and "${label}".
+Who did what, strictly:
+- ${label === "Unblocked" ? "Unblocked" : "The context engine"} only supplies context. It never writes code, runs builds, makes choices or makes mistakes. Say "${label === "Unblocked" ? "Unblocked's" : "the"} context supplied / pointed to / drove ...".
+- The coding agent does the work in both arms: every build, test, fix, choice and mistake is the agent's. Say "the agent" when it is clear which arm, else "the agent with ${label === "Unblocked" ? "Unblocked" : "the context"}" or "the baseline agent". Never attribute an action or a mistake to ${label === "Unblocked" ? "Unblocked" : "the context engine"}.
+- State the context's influence as what happened, not a hypothetical: "drove cost down by 10%", never "would cut".
+Style example: "${label === "Unblocked" ? "Unblocked's" : "The"} context drove cost down by 10%, time by 2%, and tokens by 12%, but the agent made judgement errors that drove raw numbers up."
 
 === NUMBERS (computed; use as given) ===
 ${describeNumbers(e, label)}

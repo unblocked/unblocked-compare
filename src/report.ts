@@ -3,7 +3,8 @@ import path from "node:path";
 import type { ArmResult, ComparisonResult, Met, ToolCall } from "./types.ts";
 import { formatCost, formatDiffSummary, formatDuration, formatTokens, modelCost, padLeft, padRight, priceFor, totalTokens, uncachedTokens } from "./util.ts";
 import { AGENTS, type AgentName } from "./agents/index.ts";
-import { reconcile, type Totals } from "./context-effect.ts";
+import { reconcile, type Reconciliation, type Totals } from "./context-effect.ts";
+import { BATCH_CSS, FONTS, REPORT_CSS } from "./report-style.ts";
 import type { TokenUsage } from "./types.ts";
 import { unblockedCommand } from "./unblocked-cli.ts";
 
@@ -415,66 +416,74 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
     </div>`;
   };
 
-  // TL;DR: the headline numbers, raw and with confounders removed, and a short
-  // plain-language account of them and of the context's role.
+  // Summary: the quality verdict, then each number as the context's influence
+  // and as measured, with a bar showing how the measured difference splits
+  // (the parts add up to it exactly).
   const ce = result.contextEffect;
-  // Headline: the context's influence. Detail: the measured difference, and
-  // how it splits (the parts add up to the measured difference exactly).
   const signed = (n: number, fmt: (n: number) => string) => `${n < 0 ? "&minus;" : "+"}${fmt(Math.abs(n))}`;
-  const tldrCard = (label: string, key: keyof Totals, fmt: (n: number) => string) => {
+  const usd2 = (n: number) => `$${n.toFixed(2)}`;
+  const pctHtml = (s: string) => s.replace(/^-/, "&minus;");
+  const splitBar = (r: Reconciliation) => {
+    const parts: [string, number][] = [["influence", r.influence], ["own", r.ownMistakes], ["other", r.other]];
+    const side = (neg: boolean) => parts.filter(([, v]) => (neg ? v < 0 : v > 0));
+    const sum = (neg: boolean) => side(neg).reduce((t, [, v]) => t + Math.abs(v), 0);
+    const scale = Math.max(sum(true), sum(false), Math.abs(r.measured)) || 1;
+    const segs = (neg: boolean) => side(neg).map(([k, v]) => `<span class="seg seg-${k}" style="width: ${((Math.abs(v) / scale) * 100).toFixed(1)}%"></span>`).join("");
+    return `<div class="split" aria-hidden="true"><div class="split-neg">${segs(true)}</div><div class="split-pos">${segs(false)}</div><span class="split-zero"></span><span class="split-total" style="left: ${(50 + (r.measured / scale) * 50).toFixed(1)}%"></span></div>`;
+  };
+  const resultRow = (label: string, key: keyof Totals, fmt: (n: number) => string) => {
     const e = ce!;
     const infl = pctChange(e.adjustedBaseline[key], e.adjustedUnblocked[key]);
     const raw = pctChange(e.baseline[key], e.unblocked[key]);
-    const better = e.adjustedUnblocked[key] < e.adjustedBaseline[key];
-    const cls = infl === "N/A" || /^[+-]?0%$/.test(infl) ? " neutral" : better ? " positive" : " negative";
+    const cls = infl === "N/A" || /^[+-]?0%$/.test(infl) ? "" : e.adjustedUnblocked[key] < e.adjustedBaseline[key] ? " better" : " worse";
     const r = reconcile(e, key);
     return `
-    <div class="hero-card${cls}">
-      <div class="hero-label">${label}</div>
-      <div class="hero-value${cls}">${infl}</div>
-      <div class="hero-detail">context's influence (${fmt(e.adjustedBaseline[key])} &rarr; ${fmt(e.adjustedUnblocked[key])})</div>
-      <div class="hero-detail tldr-adjusted">Measured: <b>${raw}</b> (${fmt(e.baseline[key])} &rarr; ${fmt(e.unblocked[key])})</div>
-      <div class="hero-detail tldr-split">${signed(r.measured, fmt)} measured = ${signed(r.influence, fmt)} context's influence ${signed(r.ownMistakes, fmt)} models' own mistakes ${signed(r.other, fmt)} other work</div>
-    </div>`;
+      <tr>
+        <th scope="row">${label}</th>
+        <td><span class="fig${cls}">${pctHtml(infl)}</span><span class="range">${fmt(e.adjustedBaseline[key])} to ${fmt(e.adjustedUnblocked[key])}</span></td>
+        <td><span class="fig measured">${pctHtml(raw)}</span><span class="range">${fmt(e.baseline[key])} to ${fmt(e.unblocked[key])}</span></td>
+        <td>${splitBar(r)}<div class="split-text"><span>${signed(r.measured, fmt)} measured =</span><span><i class="key key-influence"></i>${signed(r.influence, fmt)} context's influence</span><span><i class="key key-own"></i>${signed(r.ownMistakes, fmt)} agents' own mistakes</span><span><i class="key key-other"></i>${signed(r.other, fmt)} other work</span></div></td>
+      </tr>`;
   };
   const causeLabel = { context: "context", agent: "agent (not context)", environment: "environment" } as const;
-  const qualityCard = () => {
+  const qualityRow = () => {
     const q = result.quality;
     if (!q) return "";
     const better = q.verdict.better;
-    const cls = better === "unblocked" ? " positive" : better === "baseline" ? " negative" : " neutral";
     const score = (c: "baseline" | "unblocked") => {
       const reqs = q.requirements.map(r => r[c].status);
       const met = reqs.filter(s => s === "met").length, partial = reqs.filter(s => s === "partial").length;
-      return `${met}/${reqs.length} met${partial ? `, ${partial} partial` : ""}`;
+      return `${met} of ${reqs.length} met${partial ? `, ${partial} partial` : ""}`;
     };
     return `
-    <div class="hero-card${cls}">
-      <div class="hero-label">Quality</div>
-      <div class="hero-value${cls}" style="font-size: 32px; line-height: 1.5;">${better === "tie" ? "Tie" : better === "unblocked" ? escapeHtml(L.short) : "Baseline"}</div>
-      <div class="hero-detail">Requirements: Baseline ${score("baseline")} &middot; ${escapeHtml(L.short)} ${score("unblocked")}</div>
-      ${q.verdict.tieBreaker?.applied ? `<div class="hero-detail tldr-adjusted">blinded tie, broken by a context-led discovery</div>` : ""}
-    </div>`;
+      <tr class="quality-row">
+        <th scope="row">Quality</th>
+        <td colspan="3"><span class="fig${better === "unblocked" ? " better" : better === "baseline" ? " worse" : ""}">${better === "tie" ? "Tie" : better === "unblocked" ? `${escapeHtml(L.short)} better` : "Baseline better"}</span>
+          <span class="range">Requirements: Baseline ${score("baseline")}; ${escapeHtml(L.short)} ${score("unblocked")}.${q.verdict.tieBreaker?.applied ? " The blinded judge called a tie; a context-led discovery broke it." : ""}</span></td>
+      </tr>`;
   };
   const tldrSection = !ce ? "" : `
-  <div class="section tldr">
-    <div class="section-title">Summary <span class="section-sub">quality: ${result.quality ? escapeHtml(result.quality.verdict.better === "tie" ? "tie" : result.quality.verdict.better === "unblocked" ? `${L.short} better` : "Baseline better") : "not judged"}</span></div>
-    ${ce.tldr ? `<div class="tldr-headline">${escapeHtml(ce.tldr.headline)}</div>` : ""}
-    <div class="hero-grid hero-4">
-      ${qualityCard()}
-      ${tldrCard("Cost", "costUsd", formatCost)}
-      ${tldrCard("Time", "durationMs", formatDuration)}
-      ${tldrCard("Tokens", "tokens", formatTokens)}
-    </div>
-    ${ce.tldr?.bullets.length ? `<ul class="tldr-bullets">${ce.tldr.bullets.map(b => `<li>${escapeHtml(b)}</li>`).join("")}</ul>` : ""}
-    ${ce.episodes.length ? `<details class="tldr-episodes"><summary>What made the arms differ (${ce.episodes.length} episodes)</summary>
+  <section class="section summary">
+    <h2 class="section-title">Summary</h2>
+    ${ce.tldr ? `<p class="lede">${escapeHtml(ce.tldr.headline)}</p>` : ""}
+    <table class="results">
+      <thead><tr><th></th><th>Context's influence</th><th>Measured</th><th>How the measured difference splits</th></tr></thead>
+      <tbody>
+        ${qualityRow()}
+        ${resultRow("Cost", "costUsd", usd2)}
+        ${resultRow("Time", "durationMs", formatDuration)}
+        ${resultRow("Tokens", "tokens", formatTokens)}
+      </tbody>
+    </table>
+    ${ce.tldr?.bullets.length ? `<ul class="points">${ce.tldr.bullets.map(b => `<li>${escapeHtml(b)}</li>`).join("")}</ul>` : ""}
+    ${ce.episodes.length ? `<details class="ledger"><summary>What made the arms differ (${ce.episodes.length} episodes)</summary>
       <table class="tool-table">
         <thead><tr><th>Arm</th><th>Turns</th><th>Cause</th><th>What</th><th>Time</th><th>Cost</th><th>Tokens</th></tr></thead>
         <tbody>${ce.episodes.map(e => `<tr${e.cause === "context" ? ` class="highlight-row"` : ""}><td>${e.arm === "baseline" ? "Baseline" : escapeHtml(L.short)}</td><td>T${e.fromTurn}&ndash;T${e.toTurn}</td><td>${causeLabel[e.cause]}</td><td>${escapeHtml(e.what)}</td><td>${formatDuration(e.durationMs)}</td><td>${formatCost(e.costUsd)}</td><td>${formatTokens(e.tokens)}</td></tr>`).join("")}</tbody>
       </table>
-      <div class="section-note" style="margin-top: 8px;">Core work, housekeeping removed. Episodes and causes come from the un-blinded impact pass; their time, cost and tokens are summed from the per-message figures. "Context's influence" is the Baseline plus the differences the context influenced, for better or worse: turns it shaped in the ${escapeHtml(L.short)} arm, minus the Baseline's work for lack of it. Choices each model made on its own (agent) and environment noise drop out of both arms.</div>
+      <p class="section-note">Core work, housekeeping removed. Episodes and causes come from the un-blinded impact pass; their time, cost and tokens are summed from the per-message figures. "Context's influence" is the Baseline plus the differences the context influenced, for better or worse: turns it shaped in the ${escapeHtml(L.short)} arm, minus the Baseline's work for lack of it. Choices each agent made on its own, and environment noise, drop out of both arms.</p>
     </details>` : ""}
-  </div>`;
+  </section>`;
 
   const housekeepingLedger = (label: string, arm: ArmResult) => {
     const rows = arm.attribution!.turns.filter(t => t.label === "housekeeping");
@@ -487,7 +496,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
           <tbody>${rows.map(t => `
           <tr>
             <td>${t.turn}</td><td>${formatCost(t.costUsd)}</td><td>${formatDuration(t.durationMs)}</td>
-            <td style="font-family: 'SF Mono', 'Fira Code', Consolas, monospace; font-size: 12px;">${escapeHtml(t.summary)}</td>
+            <td style="font-family: var(--mono); font-size: 12px;">${escapeHtml(t.summary)}</td>
             <td style="font-size: 12px; color: var(--text-muted);">${escapeHtml(t.reason)}${t.repeatOf ? ` (repeats turn ${t.repeatOf})` : ""}</td>
           </tr>`).join("")}</tbody>
         </table>
@@ -516,8 +525,8 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
       ? { dur: a.core.durationMs, cost: a.core.costUsd, out: a.core.outputTokens, turns: a.core.turns, tag: "core" }
       : { dur: arm.run.durationMs, cost: arm.estimatedCost, out: t.outputTokens, turns: arm.run.assistantTurns, tag: "" };
     return `
-    <div class="arm-section"${accent ? ` style="border-color: rgba(59, 130, 246, 0.3);"` : ""}>
-      <div class="arm-header"${accent ? ` style="border-bottom-color: rgba(59, 130, 246, 0.2);"` : ""}>
+    <div class="arm-section${accent ? " context-arm" : ""}">
+      <div class="arm-header">
         <span class="arm-name">${escapeHtml(label)}${arm.run.killedReason ? ` <span style="color: var(--red); font-size: 12px;">(KILLED: ${escapeHtml(arm.run.killedReason)})</span>` : arm.run.timedOut ? ` <span style="color: var(--yellow); font-size: 12px;">(TIMED OUT)</span>` : ""}</span>
         ${a ? `<span style="font-size: 12px; color: var(--text-muted);">core task work · raw incl. housekeeping: ${formatCost(arm.estimatedCost)}, ${formatDuration(arm.run.durationMs)}, ${formatTokens(t.outputTokens)} out</span>` : ""}
       </div>
@@ -544,7 +553,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   const slowestRows = (arm: ArmResult) => slowestTools(arm.run.toolCalls, 5).map(tc => `
       <tr>
         <td>${formatDuration(tc.durationMs ?? 0)}</td>
-        <td style="font-family: 'SF Mono', 'Fira Code', Consolas, monospace; font-size: 12px;">${escapeHtml(toolLabel(tc))}</td>
+        <td style="font-family: var(--mono); font-size: 12px;">${escapeHtml(toolLabel(tc))}</td>
       </tr>`).join("");
 
   const maxTime = Math.max(b.run.durationMs, u.run.durationMs, 1);
@@ -614,396 +623,33 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Unblocked Compare — A/B Comparison</title>
-<style>
-  :root {
-    --bg: #0a0a0f;
-    --surface: #12121a;
-    --surface-2: #1a1a26;
-    --border: #2a2a3a;
-    --text: #e4e4ed;
-    --text-muted: #8888a0;
-    --accent: #3b82f6;
-    --accent-light: #93c5fd;
-    --accent-glow: rgba(59, 130, 246, 0.15);
-    --green: #22c55e;
-    --green-bg: rgba(34, 197, 94, 0.1);
-    --red: #ef4444;
-    --yellow: #eab308;
-    --blue: #3b82f6;
-  }
-
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    line-height: 1.6;
-    min-height: 100vh;
-  }
-
-  .container { max-width: 1100px; margin: 0 auto; padding: 40px 24px; }
-
-  .header {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    margin-bottom: 12px;
-  }
-  .logo {
-    width: 44px; height: 44px;
-    background: linear-gradient(135deg, var(--accent), var(--accent-light));
-    border-radius: 10px;
-    display: flex; align-items: center; justify-content: center;
-    font-weight: 800; font-size: 22px; color: white;
-  }
-  .header h1 {
-    font-size: 28px;
-    font-weight: 700;
-    background: linear-gradient(135deg, var(--text), var(--accent-light));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-  }
-  .subtitle {
-    color: var(--text-muted);
-    font-size: 14px;
-    margin-bottom: 40px;
-  }
-  .brand-tag {
-    display: inline-block;
-    background: var(--accent-glow);
-    border: 1px solid rgba(59, 130, 246, 0.3);
-    border-radius: 6px;
-    padding: 2px 10px;
-    font-size: 12px;
-    color: var(--accent-light);
-    font-weight: 600;
-    letter-spacing: 0.5px;
-  }
-
-  .meta-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 12px;
-    margin-bottom: 40px;
-  }
-  .meta-item {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 14px 18px;
-    display: flex;
-    justify-content: space-between;
-  }
-  .meta-key { color: var(--text-muted); font-size: 13px; }
-  .meta-val { font-weight: 600; font-size: 13px; }
-
-  .hero-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 20px;
-    margin-bottom: 40px;
-  }
-  .hero-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    padding: 28px;
-    text-align: center;
-    position: relative;
-    overflow: hidden;
-  }
-  .hero-card::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 3px;
-    background: linear-gradient(90deg, var(--accent), var(--accent-light));
-  }
-  .hero-card.positive::before {
-    background: linear-gradient(90deg, var(--green), #4ade80);
-  }
-  .hero-card.negative::before {
-    background: linear-gradient(90deg, var(--red), #f87171);
-  }
-  .hero-label {
-    font-size: 13px;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    margin-bottom: 8px;
-  }
-  .hero-value {
-    font-size: 48px;
-    font-weight: 800;
-    line-height: 1.1;
-    margin-bottom: 6px;
-  }
-  .hero-value.positive { color: var(--green); }
-  .hero-value.negative { color: var(--red); }
-  .hero-value.neutral { color: var(--accent-light); }
-  .hero-card.neutral::before { background: linear-gradient(90deg, var(--accent), var(--accent-light)); }
-  .hero-detail {
-    font-size: 14px;
-    color: var(--text-muted);
-  }
-
-  .section { margin-bottom: 40px; }
-  .tldr-headline { font-size: 19px; font-weight: 600; line-height: 1.5; margin: -4px 0 20px; }
-  .tldr .hero-grid { margin-bottom: 20px; }
-  .tldr-adjusted { margin-top: 6px; font-size: 13px; }
-  .tldr-split { margin-top: 6px; font-size: 11px; line-height: 1.5; opacity: 0.85; }
-  .tldr-bullets { margin: 0 0 12px 20px; font-size: 15px; line-height: 1.7; }
-  .tldr-episodes summary { cursor: pointer; color: var(--text-muted); font-size: 13px; margin-bottom: 10px; }
-  .full-report { margin-bottom: 40px; }
-  .full-report > summary { cursor: pointer; font-size: 16px; font-weight: 600; padding: 14px 18px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 24px; }
-  .full-report[open] > summary { margin-bottom: 32px; }
-  .section-title {
-    font-size: 18px;
-    font-weight: 700;
-    margin-bottom: 20px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .section-title::before {
-    content: '';
-    width: 4px; height: 20px;
-    background: var(--accent);
-    border-radius: 2px;
-  }
-
-  .comparison-row {
-    display: grid;
-    grid-template-columns: 140px 1fr;
-    align-items: center;
-    gap: 16px;
-    margin-bottom: 16px;
-  }
-  .comp-label {
-    font-size: 14px;
-    color: var(--text-muted);
-    text-align: right;
-  }
-  .comp-note { font-size: 11px; color: var(--text-muted); opacity: 0.7; line-height: 1.3; }
-  .bar-group { display: flex; flex-direction: column; gap: 6px; }
-  .bar-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .bar-tag {
-    font-size: 11px;
-    font-weight: 600;
-    width: 70px;
-    text-align: right;
-    flex-shrink: 0;
-  }
-  .bar-tag.baseline { color: var(--text-muted); }
-  .bar-tag.better { color: var(--green); }
-  .bar-tag.worse { color: var(--red); }
-  .bar-track {
-    flex: 1;
-    height: 28px;
-    background: var(--surface-2);
-    border-radius: 6px;
-    overflow: hidden;
-    position: relative;
-  }
-  .bar-fill {
-    height: 100%;
-    border-radius: 6px;
-    display: flex;
-    align-items: center;
-    padding: 0 12px;
-    font-size: 13px;
-    font-weight: 600;
-    white-space: nowrap;
-    transition: width 0.6s ease;
-  }
-  .bar-fill.baseline { background: rgba(136, 136, 160, 0.25); color: var(--text-muted); }
-  .bar-fill.better { background: rgba(34, 197, 94, 0.3); color: var(--green); }
-  .bar-fill.worse { background: rgba(239, 68, 68, 0.3); color: var(--red); }
-
-  .arm-section {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    overflow: hidden;
-    margin-bottom: 20px;
-  }
-  .arm-header {
-    padding: 16px 20px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    border-bottom: 1px solid var(--border);
-  }
-  .arm-name {
-    font-weight: 700;
-    font-size: 15px;
-  }
-  .arm-meta {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 1px;
-    background: var(--border);
-  }
-  .arm-stat {
-    background: var(--surface);
-    padding: 16px;
-    text-align: center;
-  }
-  .arm-stat-val {
-    font-size: 22px;
-    font-weight: 800;
-    margin-bottom: 2px;
-  }
-  .arm-stat-label {
-    font-size: 11px;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-  .arm-tokens {
-    padding: 16px 20px;
-    border-top: 1px solid var(--border);
-    display: flex;
-    gap: 24px;
-    font-size: 13px;
-    color: var(--text-muted);
-  }
-  .arm-tokens span { color: var(--text); font-weight: 600; }
-
-  .tool-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  .tool-table th { text-align: left; padding: 10px 16px; font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
-  .tool-table td { padding: 10px 16px; border-bottom: 1px solid rgba(42, 42, 58, 0.5); }
-  .tool-table tr:last-child td { border-bottom: none; }
-  .highlight-row td { background: rgba(59, 130, 246, 0.08); font-weight: 600; }
-  .tool-table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
-
-  .unblocked-grid { display: flex; flex-direction: column; gap: 8px; }
-  .unblocked-card {
-    background: var(--surface);
-    border: 1px solid rgba(59, 130, 246, 0.3);
-    border-radius: 10px;
-    padding: 12px 16px;
-    display: flex;
-    gap: 12px;
-    align-items: baseline;
-  }
-  .unblocked-tool {
-    font-size: 13px; font-weight: 700;
-    color: var(--accent-light);
-    background: var(--accent-glow);
-    border: 1px solid rgba(59, 130, 246, 0.3);
-    border-radius: 4px;
-    padding: 2px 8px;
-    flex-shrink: 0;
-  }
-  .unblocked-query { font-size: 13px; color: var(--text-muted); }
-
-  .diff-summary {
-    display: flex;
-    gap: 16px;
-    font-size: 14px;
-    color: var(--text-muted);
-    margin-bottom: 12px;
-  }
-  .diff-added { color: var(--green); font-weight: 600; }
-  .diff-removed { color: var(--red); font-weight: 600; }
-  .diff-block {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    overflow: auto;
-    max-height: 600px;
-  }
-  .diff-block pre {
-    margin: 0;
-    padding: 16px;
-    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-    font-size: 12px;
-    line-height: 1.5;
-    tab-size: 4;
-  }
-  .diff-block code { white-space: pre; }
-  .diff-file { color: var(--accent-light); font-weight: 700; }
-  .diff-meta { color: var(--text-muted); }
-  .diff-hunk { color: var(--blue); }
-  .diff-add { color: var(--green); background: rgba(34, 197, 94, 0.08); display: inline-block; width: 100%; }
-  .diff-del { color: var(--red); background: rgba(239, 68, 68, 0.08); display: inline-block; width: 100%; }
-
-  .hero-3 { grid-template-columns: repeat(3, 1fr); }
-  .hero-4 { grid-template-columns: repeat(4, 1fr); }
-  .section-note { font-size: 13px; color: var(--text-muted); margin: -8px 0 16px; line-height: 1.6; }
-  .section-sub { font-size: 12px; font-weight: 500; color: var(--text-muted); margin-left: 8px; }
-  .ledger { margin-top: 12px; }
-  .ledger summary { cursor: pointer; font-size: 13px; color: var(--accent-light); padding: 6px 0; }
-  .verdict { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 12px; padding: 16px 20px; margin-bottom: 16px; font-size: 14px; line-height: 1.6; }
-  .verdict.positive { border-left-color: var(--green); }
-  .verdict.negative { border-left-color: var(--red); }
-  .verdict-head { font-weight: 700; font-size: 16px; margin-bottom: 6px; }
-  .verdict-conf { font-weight: 500; font-size: 13px; color: var(--text-muted); }
-  .met { font-weight: 700; font-size: 13px; }
-  .met-met { color: var(--green); } .met-partial { color: var(--yellow); } .met-unmet { color: var(--red); }
-  .score { font-weight: 700; }
-  .evidence { font-size: 12px; color: var(--text-muted); margin-top: 3px; line-height: 1.5; }
-  .findings { display: flex; flex-direction: column; gap: 8px; }
-  .finding { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; font-size: 13px; }
-  .finding-arm { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-right: 8px; }
-  .finding-arm.unblocked { color: var(--accent-light); } .finding-arm.baseline { color: var(--text-muted); }
-  @media (max-width: 768px) { .hero-3, .hero-4 { grid-template-columns: 1fr; } }
-
-  .footer {
-    text-align: center;
-    padding-top: 32px;
-    border-top: 1px solid var(--border);
-    color: var(--text-muted);
-    font-size: 13px;
-  }
-  .footer a { color: var(--accent-light); text-decoration: none; }
-
-  @media (max-width: 768px) {
-    .hero-grid { grid-template-columns: 1fr; }
-    .comparison-row { grid-template-columns: 1fr; }
-    .comp-label { text-align: left; }
-    .meta-grid { grid-template-columns: 1fr; }
-    .arm-meta { grid-template-columns: repeat(2, 1fr); }
-  }
-</style>
+<title>${escapeHtml(L.vs)}</title>
+${FONTS}
+<style>${REPORT_CSS}</style>
 </head>
 <body>
-<div class="container">
+<main class="sheet">
 
-  <div class="header">
-    <div class="logo">U</div>
-    <h1>Unblocked Compare</h1>
-  </div>
-  <div class="subtitle">
-    A/B Comparison &mdash; ${timestamp} &nbsp;
-    <span class="brand-tag">${L.vs}</span>
-  </div>
+  <header class="masthead">
+    <p class="product">Unblocked Compare, ${timestamp}</p>
+    <h1>${escapeHtml(L.vs)}</h1>
+    <dl class="facts">
+      <div><dt>Repository</dt><dd>${escapeHtml(repoName(result.repo))}</dd></div>
+      <div><dt>Branch</dt><dd>${escapeHtml(result.branch)}</dd></div>
+      <div><dt>Agent</dt><dd>${escapeHtml(agentLabel(result))}</dd></div>
+      <div><dt>Model</dt><dd>${escapeHtml(result.model)}</dd></div>
+    </dl>
+  </header>
 
-  <div class="meta-grid">
-    <div class="meta-item"><span class="meta-key">Repository</span><span class="meta-val">${escapeHtml(repoName(result.repo))}</span></div>
-    <div class="meta-item"><span class="meta-key">Branch</span><span class="meta-val">${escapeHtml(result.branch)}</span></div>
-    <div class="meta-item"><span class="meta-key">Agent</span><span class="meta-val">${escapeHtml(agentLabel(result))}</span></div>
-    <div class="meta-item"><span class="meta-key">Model</span><span class="meta-val">${escapeHtml(result.model)}</span></div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">Task</div>
-    <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px;">
-      <div style="font-size: 14px; line-height: 1.7;">${escapeHtml(result.task)}</div>
-    </div>
-  </div>
+  <section class="section">
+    <h2 class="section-title">Task</h2>
+    <blockquote class="task">${escapeHtml(result.task)}</blockquote>
+  </section>
 
   ${tldrSection}
 
   <details class="full-report"${ce ? "" : " open"}>
-  <summary>Full report: core work, housekeeping, quality, what the context did, arm details, tools and diffs</summary>
+  <summary>Full report<span>Core work, housekeeping, quality, what the context did, arm details, tools and diffs</span></summary>
 
   ${hasAttr ? `
   <div class="section">
@@ -1071,7 +717,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
         ${rv.passes.map(p => `
         <div class="arm-tokens" style="display:block;"><b>Round ${p.round}</b> · ${p.mergeable ? "all met" : "open"} · ${escapeHtml(p.summary)}${p.fix ? ` · fix: ${formatCost(p.fix.costUsd)}, ${formatDuration(p.fix.durationMs)}, ${p.fix.messages} msgs${p.fix.disputed ? ` · <span class="met met-partial">disputed</span> ${escapeHtml(p.fix.disputed.slice(0, 200))}` : ""}` : ""}
           ${p.comments?.length ? `<table class="tool-table" style="margin-top: 6px;"><tbody>${p.comments.map(c => `
-            <tr><td style="width: 90px;"><span class="met ${c.severity === "must-fix" ? "met-unmet" : c.severity === "should-fix" ? "met-partial" : ""}">${c.severity}</span></td><td style="font-family: 'SF Mono', 'Fira Code', Consolas, monospace; font-size: 12px; width: 220px;">${escapeHtml(c.file.split("/").slice(-2).join("/"))}</td><td style="font-size: 13px;">${escapeHtml(c.comment)}</td></tr>`).join("")}</tbody></table>` : ""}
+            <tr><td style="width: 90px;"><span class="met ${c.severity === "must-fix" ? "met-unmet" : c.severity === "should-fix" ? "met-partial" : ""}">${c.severity}</span></td><td style="font-family: var(--mono); font-size: 12px; width: 220px;">${escapeHtml(c.file.split("/").slice(-2).join("/"))}</td><td style="font-size: 13px;">${escapeHtml(c.comment)}</td></tr>`).join("")}</tbody></table>` : ""}
         </div>`).join("")}
       </div>`;
     }).join("")}
@@ -1249,12 +895,9 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   </div>
   </details>
 
-  <div class="footer">
-    Generated by Unblocked Compare &mdash;
-    <a href="https://getunblocked.com">Unblocked</a>
-  </div>
+  <footer class="footer">Generated by Unblocked Compare. <a href="https://getunblocked.com">getunblocked.com</a></footer>
 
-</div>
+</main>
 </body>
 </html>`;
 
@@ -1351,34 +994,42 @@ export function writeBatchSummary(config: { agent: AgentName; task: string; repo
     const b = core(r, "baseline"), u = core(r, "unblocked");
     const dir = path.join(batchDir, `run-${i + 1}`);
     const v = r.quality?.verdict;
-    return `<tr><td><a href="run-${i + 1}/report.html">run ${i + 1}</a></td><td>${v ? (v.better === "unblocked" ? L.arm : v.better === "baseline" ? "Baseline" : "tie") : "–"}${v?.tieBreaker?.applied ? " <span class=\"met met-met\">tie-breaker</span>" : ""}</td><td>${r.impact ? escapeHtml(r.impact.impact.outcomeDriver) : "–"}</td><td>${formatCost(b.costUsd)} → ${formatCost(u.costUsd)} (${pct(b.costUsd, u.costUsd)})</td><td>${formatDuration(b.durationMs)} → ${formatDuration(u.durationMs)} (${pct(b.durationMs, u.durationMs)})</td><td>${b.turns} → ${u.turns}</td><td style="font-size: 12px;">${escapeHtml(v?.rationale ?? "")}</td></tr>`;
+    return `<tr><td><a href="run-${i + 1}/report.html">run ${i + 1}</a></td><td>${v ? (v.better === "unblocked" ? L.arm : v.better === "baseline" ? "Baseline" : "tie") : "–"}${v?.tieBreaker?.applied ? " <span class=\"met met-met\">tie-breaker</span>" : ""}</td><td>${r.impact ? escapeHtml(r.impact.impact.outcomeDriver) : "–"}</td><td>${formatCost(b.costUsd)} to ${formatCost(u.costUsd)} (${pct(b.costUsd, u.costUsd)})</td><td>${formatDuration(b.durationMs)} to ${formatDuration(u.durationMs)} (${pct(b.durationMs, u.durationMs)})</td><td>${b.turns} to ${u.turns}</td><td class="evidence">${escapeHtml(v?.rationale ?? "")}</td></tr>`;
   });
   const bC = med("baseline", c => c.costUsd), uC = med("unblocked", c => c.costUsd), bT = med("baseline", c => c.durationMs), uT = med("unblocked", c => c.durationMs);
-  const html = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Unblocked Compare — Batch Summary</title>
-<style>
-  :root { --bg: #0a0a0f; --surface: #12121a; --border: #2a2a3a; --text: #e4e4ed; --text-muted: #8888a0; --accent: #3b82f6; --green: #22c55e; --red: #ef4444; --yellow: #eab308; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; padding: 32px 16px; }
-  .container { max-width: 1100px; margin: 0 auto; }
-  h1 { font-size: 24px; margin-bottom: 4px; } .sub { color: var(--text-muted); margin-bottom: 24px; font-size: 14px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 28px; }
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
-  .card .k { color: var(--text-muted); font-size: 12px; text-transform: uppercase; letter-spacing: 1px; } .card .v { font-size: 26px; font-weight: 700; } .card .d { color: var(--text-muted); font-size: 13px; }
-  .pos { color: var(--green); } .neg { color: var(--red); }
-  table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
-  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: top; } th { color: var(--text-muted); font-weight: 600; }
-  a { color: #93c5fd; } .met { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; } .met-met { background: rgba(34,197,94,0.15); color: var(--green); }
-  .note { color: var(--text-muted); font-size: 13px; margin-top: 16px; }
-</style></head><body><div class="container">
-  <h1>Batch summary · ${results.length} of ${config.repeat} repeat(s)</h1>
-  <div class="sub">${escapeHtml(repoName(config.repo))} @ ${escapeHtml(config.branch)} · ${escapeHtml(agentLabel(config))} · ${escapeHtml(config.model)} · ${escapeHtml(config.task.slice(0, 160))}${config.task.length > 160 ? "…" : ""}</div>
-  <div class="grid">
-    <div class="card"><div class="k">Verdicts</div><div class="v">${counts.unblocked}–${counts.tie}–${counts.baseline}</div><div class="d">${L.short} – tie – baseline${counts.none ? ` · ${counts.none} without a verdict` : ""}</div></div>
-    <div class="card"><div class="k">Median core cost</div><div class="v ${uC <= bC ? "pos" : "neg"}">${pct(bC, uC)}</div><div class="d">${formatCost(bC)} → ${formatCost(uC)}</div></div>
-    <div class="card"><div class="k">Median core time</div><div class="v ${uT <= bT ? "pos" : "neg"}">${pct(bT, uT)}</div><div class="d">${formatDuration(bT)} → ${formatDuration(uT)}</div></div>
-  </div>
-  <table><thead><tr><th>Run</th><th>Verdict</th><th>Driver</th><th>Core cost (B → U)</th><th>Core time (B → U)</th><th>Messages</th><th>Rationale</th></tr></thead><tbody>${rows.join("")}</tbody></table>
-  <div class="note">Each run is an independent comparison (fresh worktrees, its own requirement check, judge and impact pass). Medians are over core work with housekeeping removed, across the ${judged.length} of ${results.length} run(s) that reached a verdict${judged.length < results.length ? " (a killed or timed-out run's partial spend is not comparable and is excluded)" : ""}. Verdicts follow the same rubric as the per-run reports.</div>
-</div></body></html>`;
+  const html = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(L.vs)}: ${results.length} runs</title>
+${FONTS}
+<style>${REPORT_CSS}${BATCH_CSS}</style></head><body><main class="sheet">
+  <header class="masthead">
+    <p class="product">Unblocked Compare, batch of ${results.length}${results.length < config.repeat ? ` (of ${config.repeat} planned)` : ""}</p>
+    <h1>${escapeHtml(L.vs)}</h1>
+    <dl class="facts">
+      <div><dt>Repository</dt><dd>${escapeHtml(repoName(config.repo))}</dd></div>
+      <div><dt>Branch</dt><dd>${escapeHtml(config.branch)}</dd></div>
+      <div><dt>Agent</dt><dd>${escapeHtml(agentLabel(config))}</dd></div>
+      <div><dt>Model</dt><dd>${escapeHtml(config.model)}</dd></div>
+    </dl>
+  </header>
+  <section class="section">
+    <h2 class="section-title">Task</h2>
+    <blockquote class="task">${escapeHtml(config.task.slice(0, 600))}${config.task.length > 600 ? "…" : ""}</blockquote>
+  </section>
+  <section class="section">
+    <h2 class="section-title">Across runs</h2>
+    <table class="results">
+      <tbody>
+        <tr><th scope="row">Verdicts</th><td><span class="fig">${counts.unblocked} / ${counts.tie} / ${counts.baseline}</span><span class="range">${escapeHtml(L.short)} better / tie / Baseline better${counts.none ? `; ${counts.none} without a verdict` : ""}</span></td></tr>
+        <tr><th scope="row">Median core cost</th><td><span class="fig ${uC <= bC ? "better" : "worse"}">${pct(bC, uC).replace(/^-/, "&minus;")}</span><span class="range">${formatCost(bC)} to ${formatCost(uC)}</span></td></tr>
+        <tr><th scope="row">Median core time</th><td><span class="fig ${uT <= bT ? "better" : "worse"}">${pct(bT, uT).replace(/^-/, "&minus;")}</span><span class="range">${formatDuration(bT)} to ${formatDuration(uT)}</span></td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section class="section">
+    <h2 class="section-title">Runs</h2>
+    <div class="tool-table-wrap"><table class="tool-table"><thead><tr><th>Run</th><th>Verdict</th><th>Driver</th><th>Core cost</th><th>Core time</th><th>Messages</th><th>Rationale</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>
+    <p class="section-note">Each run is an independent comparison (fresh clones, its own requirement check, judge and impact pass). Costs and times read Baseline to ${escapeHtml(L.short)}. Medians are over core work with housekeeping removed, across the ${judged.length} of ${results.length} run(s) that reached a verdict${judged.length < results.length ? " (a killed or timed-out run's partial spend is not comparable and is excluded)" : ""}. Verdicts follow the same rubric as the per-run reports.</p>
+  </section>
+</main></body></html>`;
   const out = path.join(batchDir, "summary.html");
   fs.writeFileSync(out, html);
   fs.writeFileSync(path.join(batchDir, "summary.json"), JSON.stringify({ config, verdicts: counts, medians: { baseline: { costUsd: bC, durationMs: bT }, unblocked: { costUsd: uC, durationMs: uT } }, runs: results.map((r, i) => ({ dir: `run-${i + 1}`, verdict: r.quality?.verdict, driver: r.impact?.impact.outcomeDriver, baseline: core(r, "baseline"), unblocked: core(r, "unblocked") })) }, null, 2));

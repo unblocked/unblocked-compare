@@ -138,7 +138,10 @@ export const REPORT_CSS = `
   .ledger .tool-table, .arm-section .tool-table { border-top: 2px solid var(--ink); }
   .arm-section .tool-table { border-top: none; }
   .arm-section .tool-table th:first-child, .arm-section .tool-table td:first-child { padding-left: 16px; }
-  .tool-table td:first-child { white-space: nowrap; }
+  .tool-table td:first-child, .nowrap { white-space: nowrap; }
+  .workings { margin-bottom: 20px; }
+  .workings td:not(:first-child), .workings th:not(:first-child) { text-align: right; width: 110px; white-space: nowrap; }
+  .total-row td { font-weight: 700; border-top: 1px solid var(--ink); }
   .highlight-row td { background: var(--context-tint); }
   .highlight-row td:first-child { box-shadow: inset 3px 0 0 var(--context); padding-left: 8px; }
 

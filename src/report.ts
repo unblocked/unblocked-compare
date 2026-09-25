@@ -393,18 +393,20 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
     const usd = (n: number) => (n >= 0 ? "+" : "−") + "$" + Math.abs(n).toFixed(2);
     const tok = (n: number) => (n >= 0 ? "+" : "−") + formatTokens(Math.abs(n));
     const min = (ms: number) => (ms >= 0 ? "+" : "−") + formatDuration(Math.abs(ms));
+    const allTok = (x: { inputTokens: number; cacheWriteTokens: number; cacheReadTokens: number; outputTokens: number }) => x.inputTokens + x.cacheWriteTokens + x.cacheReadTokens + x.outputTokens;
     const para = (title: string, text: string | undefined, facts: string) => `
       <div class="finding" style="margin-bottom: 8px;"><b>${title}</b>${text ? `<div style="margin-top: 4px;">${escapeHtml(text)}</div>` : ""}<div class="evidence" style="margin-top: 6px;">${facts}</div></div>`;
     const toolKinds = Object.entries(e.time.toolWaitDelta).filter(([, v]) => Math.abs(v) >= 1000).sort((a, b2) => Math.abs(b2[1]) - Math.abs(a[1])).map(([k, v]) => `${escapeHtml(k)} ${min(v)}`).join(", ");
     return `
-    <div class="section-title" style="font-size: 15px; margin-top: 24px;">Explanation of numbers <span class="section-sub">${L.short} relative to baseline${e.basis === "raw" ? "; whole-run figures, attribution missing for at least one arm" : ""}</span></div>
+    <div class="section-title" style="font-size: 15px; margin-top: 24px;">Why the measured numbers differ <span class="section-sub">${L.short} relative to baseline${e.basis === "raw" ? "; whole-run figures, attribution missing for at least one arm" : ""}</span></div>
     <div class="findings">
       ${para("Cost " + usd(e.cost.deltaUsd), ex?.cost, `output ${usd(e.cost.terms.output)} · cache-read ${usd(e.cost.terms.cacheRead)} · cache-write ${usd(e.cost.terms.cacheWrite)} · input ${usd(e.cost.terms.input)}${Math.abs(e.cost.unexplainedUsd) >= 0.01 ? ` · residual ${usd(e.cost.unexplainedUsd)}` : ""}`)}
       ${para("Time " + min(e.time.deltaMs), ex?.time, `model time ${min(e.time.modelDeltaMs)} · tool wait ${min(e.time.toolDeltaMs)}${toolKinds ? ` (${toolKinds})` : ""}`)}
-      ${para("Tokens: output " + tok(e.output.deltaTokens) + ", cache-read " + tok(e.cacheRead.deltaTokens), ex?.tokens, `output = thinking ${tok(e.output.thinkingDelta)} + visible ${tok(e.output.visibleDelta)} · cache-read: research context carried ≈ ${tok(e.cacheRead.researchCarriedTokens)}, average context per message ${tok(e.cacheRead.contextPerMessageDelta)}, messages ${e.cacheRead.messagesDelta >= 0 ? "+" : ""}${e.cacheRead.messagesDelta} · ${L.short} research: ${e.unblocked.research.calls} calls, ≈${formatTokens(e.unblocked.research.payloadTokens)} tokens returned`)}
+      ${para("Tokens " + tok(allTok(e.unblocked) - allTok(e.baseline)), ex?.tokens, `input ${tok(e.unblocked.inputTokens - e.baseline.inputTokens)} · cache-write ${tok(e.unblocked.cacheWriteTokens - e.baseline.cacheWriteTokens)} · cache-read ${tok(e.cacheRead.deltaTokens)} · output ${tok(e.output.deltaTokens)}<br>output = thinking ${tok(e.output.thinkingDelta)} + visible ${tok(e.output.visibleDelta)} · cache-read: research context carried ≈ ${tok(e.cacheRead.researchCarriedTokens)}, average context per message ${tok(e.cacheRead.contextPerMessageDelta)}, messages ${e.cacheRead.messagesDelta >= 0 ? "+" : ""}${e.cacheRead.messagesDelta} · ${L.short} research: ${e.unblocked.research.calls} calls, ≈${formatTokens(e.unblocked.research.payloadTokens)} tokens returned`)}
     </div>`;
   };
 
+  const coreTokens = (arm: ArmResult) => { const c = arm.attribution!.core; return c.inputTokens + c.cacheWriteTokens + c.cacheReadTokens + c.outputTokens; };
   const heroCard = (label: string, bVal: number, uVal: number, fmt: (n: number) => string) => {
     const pct = pctChange(bVal, uVal);
     const cls = pct === "N/A" || /^[+-]?0%$/.test(pct) ? " neutral" : uVal < bVal ? " positive" : " negative";
@@ -445,7 +447,40 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
         <td>${splitBar(r)}<div class="split-text"><span>${signed(r.measured, fmt)} measured =</span><span><i class="key key-influence"></i>${signed(r.influence, fmt)} context's influence</span><span><i class="key key-own"></i>${signed(r.ownMistakes, fmt)} agents' own mistakes</span><span><i class="key key-other"></i>${signed(r.other, fmt)} other work</span></div></td>
       </tr>`;
   };
-  const causeLabel = { context: "context", agent: "agent (not context)", environment: "environment" } as const;
+  const causeLabel = { context: "context", agent: "agent, not context", environment: "environment" } as const;
+  // The arithmetic behind the Summary, from the episode sums below it.
+  const workings = () => {
+    const e = ce!;
+    const keys: [keyof Totals, (n: number) => string][] = [["costUsd", usd2], ["durationMs", formatDuration], ["tokens", formatTokens]];
+    const pick = (arm: "baseline" | "unblocked", ctx: boolean) => (k: keyof Totals) => e.episodes.filter(x => x.arm === arm && (x.cause === "context") === ctx).reduce((t, x) => t + x[k], 0);
+    const row = (label: string, f: (k: keyof Totals) => number, cls = "", sign = false) =>
+      `<tr${cls ? ` class="${cls}"` : ""}><td>${label}</td>${keys.map(([k, fmt]) => `<td>${sign ? signed(f(k), fmt) : fmt(f(k))}</td>`).join("")}</tr>`;
+    const pctRow = (label: string, from: (k: keyof Totals) => number, to: (k: keyof Totals) => number) =>
+      `<tr class="total-row"><td>${label}</td>${keys.map(([k]) => `<td>${pctHtml(pctChange(from(k), to(k)))}</td>`).join("")}</tr>`;
+    const r = (k: keyof Totals) => reconcile(e, k);
+    return `
+      <table class="tool-table workings">
+        <thead><tr><th>Context's influence</th><th>Cost</th><th>Time</th><th>Tokens</th></tr></thead>
+        <tbody>
+          ${row("Baseline, core work", k => e.baseline[k])}
+          ${row(`+ ${escapeHtml(L.short)} arm's context episodes`, pick("unblocked", true), "", true)}
+          ${row("&minus; Baseline's episodes for lack of the context", k => -pick("baseline", true)(k), "", true)}
+          ${row("= Baseline with the context's influence", k => e.adjustedUnblocked[k], "total-row")}
+          ${pctRow("Context's influence", k => e.adjustedBaseline[k], k => e.adjustedUnblocked[k])}
+        </tbody>
+      </table>
+      <table class="tool-table workings">
+        <thead><tr><th>Measured difference</th><th>Cost</th><th>Time</th><th>Tokens</th></tr></thead>
+        <tbody>
+          ${row(`${escapeHtml(L.short)} arm, core work`, k => e.unblocked[k])}
+          ${row("&minus; Baseline, core work", k => -e.baseline[k], "", true)}
+          ${row("= Measured difference", k => r(k).measured, "total-row", true)}
+          ${row("of which: context's influence", k => r(k).influence, "", true)}
+          ${row(`of which: agents' own mistakes (${escapeHtml(L.short)} arm's agent and environment episodes, minus the Baseline's)`, k => r(k).ownMistakes, "", true)}
+          ${row("of which: other work (turns no episode covers)", k => r(k).other, "", true)}
+        </tbody>
+      </table>`;
+  };
   const qualityRow = () => {
     const q = result.quality;
     if (!q) return "";
@@ -476,12 +511,13 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
       </tbody>
     </table>
     ${ce.tldr?.bullets.length ? `<ul class="points">${ce.tldr.bullets.map(b => `<li>${escapeHtml(b)}</li>`).join("")}</ul>` : ""}
-    ${ce.episodes.length ? `<details class="ledger"><summary>What made the arms differ (${ce.episodes.length} episodes)</summary>
+    ${ce.episodes.length ? `<details class="ledger"><summary>How these numbers are worked out (${ce.episodes.length} episodes)</summary>
+      ${workings()}
       <table class="tool-table">
         <thead><tr><th>Arm</th><th>Turns</th><th>Cause</th><th>What</th><th>Time</th><th>Cost</th><th>Tokens</th></tr></thead>
-        <tbody>${ce.episodes.map(e => `<tr${e.cause === "context" ? ` class="highlight-row"` : ""}><td>${e.arm === "baseline" ? "Baseline" : escapeHtml(L.short)}</td><td>T${e.fromTurn}&ndash;T${e.toTurn}</td><td>${causeLabel[e.cause]}</td><td>${escapeHtml(e.what)}</td><td>${formatDuration(e.durationMs)}</td><td>${formatCost(e.costUsd)}</td><td>${formatTokens(e.tokens)}</td></tr>`).join("")}</tbody>
+        <tbody>${ce.episodes.map(e => `<tr${e.cause === "context" ? ` class="highlight-row"` : ""}><td>${e.arm === "baseline" ? "Baseline" : escapeHtml(L.short)}</td><td class="nowrap">T${e.fromTurn}&ndash;T${e.toTurn}</td><td>${causeLabel[e.cause]}</td><td>${escapeHtml(e.what)}</td><td class="nowrap">${formatDuration(e.durationMs)}</td><td class="nowrap">${usd2(e.costUsd)}</td><td class="nowrap">${formatTokens(e.tokens)}</td></tr>`).join("")}</tbody>
       </table>
-      <p class="section-note">Core work, housekeeping removed. Episodes and causes come from the un-blinded impact pass; their time, cost and tokens are summed from the per-message figures. "Context's influence" is the Baseline plus the differences the context influenced, for better or worse: turns it shaped in the ${escapeHtml(L.short)} arm, minus the Baseline's work for lack of it. Choices each agent made on its own, and environment noise, drop out of both arms.</p>
+      <p class="section-note">Core work, housekeeping removed; the same figures as section 1. Episodes and causes come from the un-blinded impact pass; their time, cost and tokens are summed from the per-message figures. "Context's influence" is the Baseline plus the differences the context influenced, for better or worse: turns it shaped in the ${escapeHtml(L.short)} arm, minus the Baseline's work for lack of it. Choices each agent made on its own, and environment noise, drop out of both arms.</p>
     </details>` : ""}
   </section>`;
 
@@ -522,29 +558,28 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
     const has = totalTokens(t) > 0;
     const a = arm.attribution;
     const head = a
-      ? { dur: a.core.durationMs, cost: a.core.costUsd, out: a.core.outputTokens, turns: a.core.turns, tag: "core" }
-      : { dur: arm.run.durationMs, cost: arm.estimatedCost, out: t.outputTokens, turns: arm.run.assistantTurns, tag: "" };
+      ? { dur: a.core.durationMs, cost: a.core.costUsd, tokens: coreTokens(arm), turns: a.core.turns, tag: "Core" }
+      : { dur: arm.run.durationMs, cost: arm.estimatedCost, tokens: totalTokens(t), turns: arm.run.assistantTurns, tag: "" };
+    const cap = (x: string) => head.tag ? `${head.tag} ${x.toLowerCase()}` : x;
     return `
     <div class="arm-section${accent ? " context-arm" : ""}">
       <div class="arm-header">
         <span class="arm-name">${escapeHtml(label)}${arm.run.killedReason ? ` <span style="color: var(--red); font-size: 12px;">(KILLED: ${escapeHtml(arm.run.killedReason)})</span>` : arm.run.timedOut ? ` <span style="color: var(--yellow); font-size: 12px;">(TIMED OUT)</span>` : ""}</span>
-        ${a ? `<span style="font-size: 12px; color: var(--text-muted);">core task work · raw incl. housekeeping: ${formatCost(arm.estimatedCost)}, ${formatDuration(arm.run.durationMs)}, ${formatTokens(t.outputTokens)} out</span>` : ""}
+        ${a ? `<span style="font-size: 13px; color: var(--text-muted);">Whole run, housekeeping included: ${formatCost(arm.estimatedCost)}, ${formatDuration(arm.run.durationMs)}, ${formatTokens(totalTokens(t))} tokens</span>` : ""}
       </div>
       <div class="arm-meta">
-        <div class="arm-stat"><div class="arm-stat-val">${formatDuration(head.dur)}</div><div class="arm-stat-label">${head.tag} Duration</div></div>
-        <div class="arm-stat"><div class="arm-stat-val">${has ? formatCost(head.cost) : "N/A"}${arm.run.costEstimated ? ` <span style="font-size: 11px; color: var(--yellow);">(est.)</span>` : ""}</div><div class="arm-stat-label">${head.tag} Cost</div></div>
-        <div class="arm-stat"><div class="arm-stat-val">${has ? formatTokens(head.out) : "N/A"}</div><div class="arm-stat-label">${head.tag} Output Tokens</div></div>
-        <div class="arm-stat"><div class="arm-stat-val">${head.turns}</div><div class="arm-stat-label">${head.tag} ${a ? "Messages" : "Turns"}</div></div>
+        <div class="arm-stat"><div class="arm-stat-val">${has ? formatCost(head.cost) : "N/A"}${arm.run.costEstimated ? ` <span style="font-size: 11px; color: var(--yellow);">(est.)</span>` : ""}</div><div class="arm-stat-label">${cap("Cost")}</div></div>
+        <div class="arm-stat"><div class="arm-stat-val">${formatDuration(head.dur)}</div><div class="arm-stat-label">${cap("Time")}</div></div>
+        <div class="arm-stat"><div class="arm-stat-val">${has ? formatTokens(head.tokens) : "N/A"}</div><div class="arm-stat-label">${cap("Tokens")}</div></div>
+        <div class="arm-stat"><div class="arm-stat-val">${head.turns}</div><div class="arm-stat-label">${cap(a ? "Messages" : "Turns")}</div></div>
       </div>
       ${has ? `<div class="arm-tokens">
-        ${a ? `Core cache read: <span>${formatTokens(a.core.cacheReadTokens)}</span> &nbsp; Housekeeping: <span>${a.housekeeping.turns} msgs, ${formatCost(a.housekeeping.costUsd)}, ${formatDuration(a.housekeeping.durationMs)}</span> &nbsp;` : ""}
-        Raw &mdash; Fresh Input: <span>${formatTokens(t.inputTokens)}</span> &nbsp;
-        Output: <span>${formatTokens(t.outputTokens)}</span> &nbsp;
-        Cache Read: <span>${formatTokens(t.cacheReadTokens)}</span> &nbsp;
-        Cache Write: <span>${formatTokens(t.cacheCreationTokens)}</span>
+        ${a ? `Core tokens: input <span>${formatTokens(a.core.inputTokens)}</span> + cache write <span>${formatTokens(a.core.cacheWriteTokens)}</span> + cache read <span>${formatTokens(a.core.cacheReadTokens)}</span> + output <span>${formatTokens(a.core.outputTokens)}</span>`
+          : `Tokens: input <span>${formatTokens(t.inputTokens)}</span> + cache write <span>${formatTokens(t.cacheCreationTokens)}</span> + cache read <span>${formatTokens(t.cacheReadTokens)}</span> + output <span>${formatTokens(t.outputTokens)}</span>`}
       </div>` : `<div class="arm-tokens" style="color: var(--text-muted);">Token data unavailable</div>`}
       <div class="arm-tokens">
-        ${hasTiming(arm) ? `${arm.attribution ? "" : `Model time (approx., duration minus tool wait): <span>${formatDuration(modelTimeMs(arm))}</span> &nbsp; `}Tool time: <span>${formatDuration(toolTimeMs(arm))}</span> &nbsp;` : ""}
+        ${a ? `Core time: model <span>${formatDuration(a.core.modelMs)}</span> + tool wait <span>${formatDuration(a.core.toolMs)}</span> &nbsp; Housekeeping: <span>${a.housekeeping.turns} msgs, ${formatCost(a.housekeeping.costUsd)}, ${formatDuration(a.housekeeping.durationMs)}</span> &nbsp;`
+          : hasTiming(arm) ? `Model time (approx., duration minus tool wait): <span>${formatDuration(modelTimeMs(arm))}</span> &nbsp; Tool time: <span>${formatDuration(toolTimeMs(arm))}</span> &nbsp;` : ""}
         Diff: <span>${escapeHtml(formatDiffSummary(arm.diffStats))}</span>
       </div>
     </div>`;
@@ -653,25 +688,27 @@ ${FONTS}
 
   ${hasAttr ? `
   <div class="section">
-    <div class="section-title">1 · Core task work</div>
-    <div class="section-note">Reading, deciding, coding, testing. Housekeeping removed from both arms. Time is model time; tool wait is in section 2.</div>
+    <div class="section-title">1 · Core task work <span class="section-sub">${ce ? "the Summary's measured figures" : "the headline figures"}</span></div>
+    <div class="section-note">Reading, deciding, coding, testing, and the tool wait they caused. Housekeeping (section 2) is removed from both arms. Time is model time plus tool wait; tokens are every token the model processed: fresh input, cache writes, cache reads and output.</div>
     ${ce ? "" : `<div class="hero-grid hero-3">
       ${heroCard("Cost", b.attribution!.core.costUsd, u.attribution!.core.costUsd, formatCost)}
-      ${hasCoreTiming ? heroCard("Model time", coreModelTimeMs(b), coreModelTimeMs(u), formatDuration) : ""}
-      ${heroCard("Output tokens", b.attribution!.core.outputTokens, u.attribution!.core.outputTokens, formatTokens)}
+      ${heroCard("Time", b.attribution!.core.durationMs, u.attribution!.core.durationMs, formatDuration)}
+      ${heroCard("Tokens", coreTokens(b), coreTokens(u), formatTokens)}
     </div>`}
     ${barPair("Cost", b.attribution!.core.costUsd, u.attribution!.core.costUsd, maxCost, formatCost)}
-    ${hasCoreTiming ? barPair("Model time", coreModelTimeMs(b), coreModelTimeMs(u), maxTime, formatDuration, "thinking + generation; the headline time") : ""}
-    ${hasCoreTiming ? barPair("Tool wait", coreToolTimeMs(b), coreToolTimeMs(u), maxTime, formatDuration, "tests, CI, MCP, shell — depends on what each agent chose to run; see section 2") : ""}
-    ${barPair("Output tokens", b.attribution!.core.outputTokens, u.attribution!.core.outputTokens, Math.max(b.attribution!.core.outputTokens, u.attribution!.core.outputTokens, 1), formatTokens, "what the model wrote")}
-    ${barPair("Cache-read tokens", b.attribution!.core.cacheReadTokens, u.attribution!.core.cacheReadTokens, Math.max(b.attribution!.core.cacheReadTokens, u.attribution!.core.cacheReadTokens, 1), formatTokens, "context re-read per turn; 2% of output price")}
+    ${barPair("Time", b.attribution!.core.durationMs, u.attribution!.core.durationMs, maxTime, formatDuration, "model time + tool wait")}
+    ${hasCoreTiming ? barPair("Model time", coreModelTimeMs(b), coreModelTimeMs(u), maxTime, formatDuration, "thinking and generation") : ""}
+    ${hasCoreTiming ? barPair("Tool wait", coreToolTimeMs(b), coreToolTimeMs(u), maxTime, formatDuration, "tests, builds, research, shell: set by what each agent chose to run") : ""}
+    ${barPair("Tokens", coreTokens(b), coreTokens(u), Math.max(coreTokens(b), coreTokens(u), 1), formatTokens, "input + cache write + cache read + output")}
+    ${barPair("Cache-read tokens", b.attribution!.core.cacheReadTokens, u.attribution!.core.cacheReadTokens, Math.max(coreTokens(b), coreTokens(u), 1), formatTokens, "context re-read each message; most of the total, priced at a tenth of input")}
+    ${barPair("Output tokens", b.attribution!.core.outputTokens, u.attribution!.core.outputTokens, Math.max(b.attribution!.core.outputTokens, u.attribution!.core.outputTokens, 1), formatTokens, "what the model wrote; the most expensive tokens")}
     ${barPair("Messages", b.attribution!.core.turns, u.attribution!.core.turns, Math.max(b.attribution!.core.turns, u.attribution!.core.turns, 1), String)}
     ${result.economics ? economicsBlock(result) : ""}
   </div>
 
   <div class="section">
-    <div class="section-title">2 · Housekeeping and tool wait <span class="section-sub">excluded from the headline</span></div>
-    <div class="section-note">Tool wait: time spent in tests, CI and shell commands, set by what each agent chose to run. Housekeeping: lockfile reverts, artifact cleanup, status checks, branching, committing, redundant reruns. Model habit, not context.</div>
+    <div class="section-title">2 · Housekeeping <span class="section-sub">excluded from every figure above</span></div>
+    <div class="section-note">Housekeeping: lockfile reverts, artifact cleanup, status checks, branching, committing, redundant reruns. Model habit, not context, so it counts in neither arm. Tool wait during core work is part of the core time; it is shown here for reference. Raw total is the whole run, housekeeping included.</div>
     <div class="tool-table-wrap">
       <table class="tool-table">
         <thead><tr><th>Arm</th><th>Housekeeping msgs</th><th>Cost</th><th>Time</th><th>What it was</th><th>Tool wait in core work</th><th>Raw total</th></tr></thead>

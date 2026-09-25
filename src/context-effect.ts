@@ -13,7 +13,7 @@
 // arm's failed runs would also subtract work, like a cold build, that the
 // other arm's figures still carry. A short TL;DR is written from the numbers.
 import type { ArmResult, ComparisonResult, Condition, EpisodeCause } from "./types.ts";
-import { formatCost, formatTokens, log } from "./util.ts";
+import { formatCost, formatDuration, formatTokens, log } from "./util.ts";
 import { runStructured } from "./analyst.ts";
 
 export interface Totals { costUsd: number; durationMs: number; tokens: number }
@@ -78,17 +78,34 @@ export function reconcile(e: ContextEffect, key: keyof Totals): Reconciliation {
 }
 
 const pct = (from: number, to: number) => (from ? `${to >= from ? "+" : ""}${Math.round(((to - from) / from) * 100)}%` : "n/a");
+// Formatted exactly as the report shows them, so the Summary quotes the page.
 const money = (n: number) => `${n < 0 ? "-" : ""}$${Math.abs(n).toFixed(2)}`;
-const mins = (ms: number) => `${ms < 0 ? "-" : ""}${(Math.abs(ms) / 60000).toFixed(1)} min`;
+const dur = (ms: number) => `${ms < 0 ? "-" : ""}${formatDuration(Math.abs(ms))}`;
+const tok = (n: number) => `${n < 0 ? "-" : ""}${formatTokens(Math.abs(n))}`;
+const sgn = (n: number, f: (n: number) => string) => (n >= 0 ? "+" : "") + f(n);
 
 export function describeNumbers(e: ContextEffect, label: string): string {
   const line = (name: string, b: Totals, u: Totals) =>
-    `${name}: cost ${money(b.costUsd)} -> ${money(u.costUsd)} (${pct(b.costUsd, u.costUsd)}); time ${mins(b.durationMs)} -> ${mins(u.durationMs)} (${pct(b.durationMs, u.durationMs)}); tokens ${formatTokens(b.tokens)} -> ${formatTokens(u.tokens)} (${pct(b.tokens, u.tokens)})`;
+    `${name}: cost ${money(b.costUsd)} -> ${money(u.costUsd)} (${pct(b.costUsd, u.costUsd)}); time ${dur(b.durationMs)} -> ${dur(u.durationMs)} (${pct(b.durationMs, u.durationMs)}); tokens ${tok(b.tokens)} -> ${tok(u.tokens)} (${pct(b.tokens, u.tokens)})`;
+  const split = (key: keyof Totals, f: (n: number) => string) => {
+    const r = reconcile(e, key);
+    return `${sgn(r.measured, f)} measured = ${sgn(r.influence, f)} context's influence ${sgn(r.ownMistakes, f)} agents' own mistakes ${sgn(r.other, f)} other work`;
+  };
+  const ctx = (arm: Condition) => e.episodes.filter(x => x.arm === arm && x.cause === "context");
+  const own = (arm: Condition) => e.episodes.filter(x => x.arm === arm && x.cause !== "context");
+  const sum = (xs: EpisodeSum[]) => `${money(xs.reduce((t, x) => t + x.costUsd, 0))}, ${dur(xs.reduce((t, x) => t + x.durationMs, 0))}, ${tok(xs.reduce((t, x) => t + x.tokens, 0))} tokens`;
   return [
-    line(`RAW (baseline -> ${label})`, e.baseline, e.unblocked),
-    line(`CONTEXT'S INFLUENCE, each model's own mistakes excluded (baseline -> baseline plus the context-influenced differences)`, e.adjustedBaseline, e.adjustedUnblocked),
+    line(`MEASURED (baseline -> ${label}, core work)`, e.baseline, e.unblocked),
+    line(`CONTEXT'S INFLUENCE (baseline -> baseline + ${label} arm's context episodes - baseline's context episodes)`, e.adjustedBaseline, e.adjustedUnblocked),
+    `${label} arm's context episodes total: ${sum(ctx("unblocked"))}`,
+    `Baseline's context episodes (work the baseline agent did for lack of the context) total: ${sum(ctx("baseline"))}`,
+    `${label} agent's own mistakes and environment noise ([agent]/[environment] episodes in its arm) total: ${sum(own("unblocked"))}`,
+    `Baseline agent's own mistakes and environment noise total: ${sum(own("baseline"))}`,
+    `SPLIT, cost: ${split("costUsd", money)}`,
+    `SPLIT, time: ${split("durationMs", dur)}`,
+    `SPLIT, tokens: ${split("tokens", tok)}`,
     "EPISODES:",
-    ...e.episodes.map(x => `- ${x.arm === "baseline" ? "baseline" : label} T${x.fromTurn}-T${x.toTurn} [${x.cause}] ${x.what}: ${mins(x.durationMs)}, ${money(x.costUsd)}, ${formatTokens(x.tokens)} tokens`),
+    ...e.episodes.map(x => `- ${x.arm === "baseline" ? "baseline" : label} T${x.fromTurn}-T${x.toTurn} [${x.cause}] ${x.what}: ${money(x.costUsd)}, ${dur(x.durationMs)}, ${tok(x.tokens)} tokens`),
   ].join("\n");
 }
 
@@ -111,6 +128,11 @@ Who did what, strictly:
 - ${label === "Unblocked" ? "Unblocked" : "The context engine"} only supplies context. It never writes code, runs builds, makes choices or makes mistakes. Say "${label === "Unblocked" ? "Unblocked's" : "the"} context supplied / pointed to / drove ...".
 - The coding agent does the work in both arms: every build, test, fix, choice and mistake is the agent's. Say "the agent" when it is clear which arm, else "the agent with ${label === "Unblocked" ? "Unblocked" : "the context"}" or "the baseline agent". Never attribute an action or a mistake to ${label === "Unblocked" ? "Unblocked" : "the context engine"}.
 - State the context's influence as what happened, not a hypothetical: "drove cost down by 10%", never "would cut".
+- Episode labels are fixed; follow them, never reinterpret them. A baseline [context] episode is work the baseline agent did for lack of the context: say so. A [agent] or [environment] episode is one the context did not influence, in either arm.
+- Requirements are met or missed by an agent, never by ${label === "Unblocked" ? "Unblocked" : "the context"}: "the agent with ${label === "Unblocked" ? "Unblocked" : "the context"} met both requirements".
+- A MEASURED percentage is the whole difference between the arms. Never attribute a measured percentage to mistakes or to the context; the SPLIT lines say how much of it each part explains.
+- "Agents' own mistakes" in SPLIT is a net figure: the ${label} agent's own mistakes minus the baseline agent's. When it is negative, the baseline agent's own mistakes cost more: say "the baseline agent's own mistakes added $X to the baseline", using the per-arm totals.
+- Quote numbers only from NUMBERS, character for character (for example "$0.18", "25s", "60.2k tokens"). Do not convert units, round or add figures together yourself.
 Style example: "${label === "Unblocked" ? "Unblocked's" : "The"} context drove cost down by 10%, time by 2%, and tokens by 12%, but the agent made judgement errors that drove raw numbers up."
 
 === NUMBERS (computed; use as given) ===

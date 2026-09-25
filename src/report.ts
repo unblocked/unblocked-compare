@@ -431,38 +431,40 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   // what made the difference, green when it saved and red when it cost more.
   const without = L.short === "Unblocked" ? "Without Unblocked" : "Without context";
   const plain = (n: number, fmt: (n: number) => string, unit: string) => `${fmt(Math.abs(n))}${unit}`;
-  const compareBlock = (label: string, key: keyof Totals, fmt: (n: number) => string, unit = "") => {
+  // A waterfall: start without the context, take off or add each part, end
+  // with it. Green takes away, red adds; every bar has its label in its row.
+  const compareBlock = (label: string, key: keyof Totals, fmt: (n: number) => string) => {
     const e = ce!;
     const bv = e.baseline[key], uv = e.unblocked[key];
     const r = reconcile(e, key);
-    const infl = r.influence;
-    const max = Math.max(bv, uv, bv + infl) || 1;
-    const w = (v: number) => `${((Math.abs(v) / max) * 100).toFixed(1)}%`;
+    const ctxName = L.short === "Unblocked" ? "Unblocked's context" : "The context";
+    const small = (v: number) => Math.abs(v) < Math.max(bv, uv) * 0.01;
+    const steps: [string, string, number, boolean][] = ([
+      [`${ctxName} saved`, `${ctxName} added`, r.influence, true],
+      ["Fewer mistakes saved", "More mistakes added", r.ownMistakes, false],
+      ["Other work saved", "Other work added", r.other, false],
+    ] as [string, string, number, boolean][]).filter(([, , v]) => !small(v));
+    let run = bv, peak = bv;
+    for (const [, , v] of steps) { run += v; peak = Math.max(peak, run); }
+    const max = Math.max(peak, uv) || 1;
+    const pos = (from: number, to: number) => `left: ${((Math.min(from, to) / max) * 100).toFixed(2)}%; width: ${((Math.abs(to - from) / max) * 100).toFixed(2)}%`;
     const raw = pctChange(bv, uv);
     const rawCls = raw === "N/A" || /^[+-]?0%$/.test(raw) ? "" : uv < bv ? "better" : "worse";
-    const inflPct = pctChange(bv, bv + infl).replace(/^[-+]/, "");
-    const small = (v: number) => Math.abs(v) < Math.max(bv, uv) * 0.01;
-    const ctxName = L.short === "Unblocked" ? "Unblocked's context" : "The context";
-    // The Without bar marks what the context saved (green) or added (red):
-    // that piece is the context's influence, the hero's percentage.
-    const fits = (v: number, text: string) => Math.abs(v) / max >= 0.02 + 0.03 * text.length;
-    const ctxText = `${infl < 0 ? "context saved" : "context added"} ${fmt(Math.abs(infl))}`;
-    const ctxSeg = small(infl) ? "" : `<span class="cb-bar ${infl < 0 ? "saved" : "added"}" style="width: ${w(infl)}" title="${ctxText}">${fits(infl, ctxText) ? ctxText : fits(infl, fmt(Math.abs(infl))) ? fmt(Math.abs(infl)) : ""}</span>`;
-    const baseW = infl < 0 ? bv + infl : bv;
-    const line = (v: number, saved: string, added: string, extra = "") => small(v) ? "" :
-      `<li class="${v < 0 ? "good" : "bad"}">${v < 0 ? saved : added} ${fmt(Math.abs(v))}${unit}${extra}</li>`;
+    const row = (name: string, cls: string, from: number, to: number, value: string, strong = false) =>
+      `<div class="wf-row${strong ? " strong" : ""}"><span class="wf-name">${name}</span><div class="wf-track"><span class="wf-bar ${cls}" style="${pos(from, to)}"></span></div><span class="wf-val ${cls}">${value}</span></div>`;
+    run = bv;
+    const stepRows = steps.map(([saved, added, v, isCtx]) => {
+      const from = run; run += v;
+      return row(`${v < 0 ? saved : added}${isCtx ? ` (${pctChange(bv, bv + v).replace(/^[-+]/, "")})` : ""}`, v < 0 ? "down" : "up", from, run, `${v < 0 ? "&minus;" : "+"}${fmt(Math.abs(v))}`, isCtx);
+    }).join("");
     return `
       <div class="cmp">
         <h3 class="cmp-label">${label}</h3>
-        <div class="cmp-bars">
-          <div class="cb-row"><span class="cb-name">${without}</span><div class="cb-track"><span class="cb-bar base" style="width: ${w(baseW)}"></span>${ctxSeg}<span class="cb-val">${fmt(bv)}</span></div></div>
-          <div class="cb-row"><span class="cb-name ctx">${escapeHtml(L.arm)}</span><div class="cb-track"><span class="cb-bar ctx" style="width: ${w(uv)}"></span><span class="cb-val">${fmt(uv)}${rawCls ? `, <em class="${rawCls}">${pctHtml(raw)} overall</em>` : ""}</span></div></div>
+        <div class="wf">
+          ${row(without, "base", 0, bv, fmt(bv))}
+          ${stepRows}
+          ${row(escapeHtml(L.arm), "ctx", 0, uv, `${fmt(uv)}${rawCls ? ` <em class="${rawCls}">${pctHtml(raw)} overall</em>` : ""}`)}
         </div>
-        <ul class="why">
-          ${line(infl, `${ctxName} saved`, `${ctxName} added`, ` (${inflPct})`)}
-          ${line(r.ownMistakes, "Fewer mistakes saved", "More mistakes added")}
-          ${line(r.other, "Other work saved", "Other work added")}
-        </ul>
       </div>`;
   };
   const causeLabel = { context: "context", agent: "agent, not context", environment: "environment" } as const;
@@ -567,7 +569,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
     <div class="cmps">
       ${compareBlock("Cost", "costUsd", usd2)}
       ${compareBlock("Time", "durationMs", formatDuration)}
-      ${compareBlock("Tokens", "tokens", formatTokens, " tokens")}
+      ${compareBlock("Tokens", "tokens", formatTokens)}
     </div>
     ${ce.episodes.length ? `<details class="ledger"><summary>How these numbers are worked out (${ce.episodes.length} episodes)</summary>
       ${workings()}

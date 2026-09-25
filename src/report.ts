@@ -440,12 +440,13 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
     const infl = pctChange(e.adjustedBaseline[key], e.adjustedUnblocked[key]);
     const raw = pctChange(e.baseline[key], e.unblocked[key]);
     const cls = infl === "N/A" || /^[+-]?0%$/.test(infl) ? "" : e.adjustedUnblocked[key] < e.adjustedBaseline[key] ? " better" : " worse";
+    const rawCls = raw === "N/A" || /^[+-]?0%$/.test(raw) ? "" : e.unblocked[key] < e.baseline[key] ? " better" : " worse";
     const r = reconcile(e, key);
     return `
       <tr>
         <th scope="row">${label}</th>
         <td><span class="fig${cls}">${pctHtml(infl)}</span><span class="range">${fmt(e.adjustedBaseline[key])} to ${fmt(e.adjustedUnblocked[key])}</span></td>
-        <td><span class="fig measured">${pctHtml(raw)}</span><span class="range">${fmt(e.baseline[key])} to ${fmt(e.unblocked[key])}</span></td>
+        <td><span class="fig measured${rawCls}">${pctHtml(raw)}</span><span class="range">${fmt(e.baseline[key])} to ${fmt(e.unblocked[key])}</span></td>
         <td>${splitBar(r)}<div class="split-text"><span>${signed(r.measured, fmt)} measured =</span><span><i class="key key-influence"></i>${signed(r.influence, fmt)} context's influence</span><span><i class="key key-own"></i>${signed(r.ownMistakes, fmt)} agents' own mistakes</span><span><i class="key key-other"></i>${signed(r.other, fmt)} other work</span></div></td>
       </tr>`;
   };

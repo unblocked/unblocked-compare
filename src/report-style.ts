@@ -1,5 +1,5 @@
-// Report styling: a light sheet under a deep plum hero. Raspberry is the
-// context arm and "better"; burnt amber is "worse"; the Baseline is grey-violet.
+// Report styling: a light sheet under a deep plum hero. Green is better and
+// red is worse, nowhere else; orchid is the context arm, grey-violet the Baseline.
 // Bricolage Grotesque for display, Atkinson Hyperlegible for reading.
 export const FONTS = `<link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -7,30 +7,30 @@ export const FONTS = `<link rel="preconnect" href="https://fonts.googleapis.com"
 
 export const REPORT_CSS = `
   :root {
-    --ground: #f2ecef;
+    --ground: #f1edf3;
     --paper: #ffffff;
     --ink: #1e1220;
     --text: #1e1220;
     --text-muted: #6b5f6e;
-    --rule: #e2d9df;
-    --rule-soft: #f0eaee;
-    --tint: #f8f4f6;
-    --context: #c2185b;
-    --context-tint: #fce8f0;
+    --rule: #e0d9e4;
+    --rule-soft: #efeaf2;
+    --tint: #f7f4f9;
+    --context: #8e3fa8;
+    --context-tint: #f4eaf8;
     --baseline: #8a8196;
-    --better: #c2185b;
-    --worse: #b45309;
-    --green: #1f7a4d;
-    --green-tint: #e6f3ec;
-    --red: #b42318;
+    --better: #16833f;
+    --worse: #c42b2b;
+    --green: #16833f;
+    --green-tint: #e5f4e9;
+    --red: #c42b2b;
     --red-tint: #fbe9e7;
     --yellow: #94640a;
     --band: #2a0a1f;
     --band-ink: #fbeef3;
     --band-muted: rgba(251, 238, 243, 0.62);
     --band-rule: rgba(251, 238, 243, 0.16);
-    --band-better: #ff8fbd;
-    --band-worse: #f6c177;
+    --band-better: #8fe39a;
+    --band-worse: #ff8a80;
     --gold: #e9c98b;
     --display: "Bricolage Grotesque", "Atkinson Hyperlegible Next", system-ui, sans-serif;
     --sans: "Atkinson Hyperlegible Next", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -42,7 +42,7 @@ export const REPORT_CSS = `
   a { color: var(--context); text-underline-offset: 2px; }
   :focus-visible { outline: 2px solid var(--context); outline-offset: 2px; }
 
-  body { background: radial-gradient(1200px 640px at 50% -220px, #f3cddd, transparent 70%), var(--ground); }
+  body { background: radial-gradient(1200px 640px at 50% -220px, #e3d2ee, transparent 70%), var(--ground); }
   .sheet { max-width: 1000px; margin: 40px auto 64px; padding: 0 64px 44px; background: var(--paper); border-radius: 14px; overflow: hidden; box-shadow: 0 1px 0 rgba(42, 10, 31, 0.06), 0 50px 100px -40px rgba(42, 10, 31, 0.5); }
 
   .masthead { margin: 0 -64px 44px; padding: 52px 64px 36px; background: var(--band); color: var(--band-ink); }
@@ -59,7 +59,7 @@ export const REPORT_CSS = `
   .task { font-size: 16px; line-height: 1.65; max-width: 72ch; padding: 2px 0 2px 18px; border-left: 3px solid var(--context); white-space: pre-wrap; overflow-wrap: anywhere; }
 
   /* Hero: task, verdict, scoreboard */
-  .hero { position: relative; margin: 0 -64px 52px; padding: 40px 64px 34px; color: var(--band-ink); background: radial-gradient(900px 420px at 100% 0%, rgba(194, 24, 91, 0.45), transparent 65%), var(--band); }
+  .hero { position: relative; margin: 0 -64px 52px; padding: 40px 64px 34px; color: var(--band-ink); background: radial-gradient(900px 420px at 100% 0%, rgba(142, 63, 168, 0.5), transparent 65%), var(--band); }
   .hero-meta { display: flex; justify-content: space-between; font-size: 13px; color: var(--band-muted); margin-bottom: 44px; }
   .hero-meta span:first-child { color: var(--gold); font-weight: 600; }
   .hero-vs { font-size: 15px; color: var(--gold); margin-bottom: 8px; }
@@ -96,6 +96,8 @@ export const REPORT_CSS = `
   .fig.worse { color: var(--worse); }
   .fig.measured { font-size: 30px; font-weight: 600; letter-spacing: -0.025em; color: var(--text-muted); padding-top: 14px; }
   .range { display: block; font-size: 13px; color: var(--text-muted); margin-top: 4px; }
+  .fig.measured.better { color: #4f9a67; }
+  .fig.measured.worse { color: #d4605a; }
   .quality-row .fig { font-size: 40px; }
   .quality-row .range { font-size: 14px; }
 
@@ -162,7 +164,7 @@ export const REPORT_CSS = `
   .bar-track { flex: 1; height: 20px; }
   .bar-fill { height: 100%; min-width: fit-content; display: flex; align-items: center; padding: 0 8px; font-size: 13px; font-weight: 600; white-space: nowrap; }
   .bar-fill.baseline { background: #ebe4ea; color: var(--ink); }
-  .bar-fill.better { background: var(--context-tint); color: var(--context); box-shadow: inset 3px 0 0 var(--context); }
+  .bar-fill.better { background: var(--context-tint); color: var(--better); box-shadow: inset 3px 0 0 var(--context); }
   .bar-fill.worse { background: var(--context-tint); color: var(--worse); box-shadow: inset 3px 0 0 var(--context); }
 
   /* Arm details */

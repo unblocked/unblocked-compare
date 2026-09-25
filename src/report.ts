@@ -423,6 +423,8 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   // (the parts add up to it exactly).
   const ce = result.contextEffect;
   const signed = (n: number, fmt: (n: number) => string) => `${n < 0 ? "&minus;" : "+"}${fmt(Math.abs(n))}`;
+  // Model-written text: real arrows and minus signs.
+  const typeset = (t: string) => escapeHtml(t).replace(/\s*-&gt;\s*/g, " &rarr; ").replace(/(^|[\s(\/])-(?=\$?\d)/g, "$1&minus;");
   const usd2 = (n: number) => `$${n.toFixed(2)}`;
   const pctHtml = (s: string) => s.replace(/^-/, "&minus;");
   const splitBar = (r: Reconciliation) => {
@@ -500,7 +502,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   const tldrSection = !ce ? "" : `
   <section class="section summary">
     <h2 class="section-title">Summary</h2>
-    ${ce.tldr ? `<p class="lede">${escapeHtml(ce.tldr.headline)}</p>` : ""}
+    ${ce.tldr ? `<p class="lede">${typeset(ce.tldr.headline)}</p>` : ""}
     <table class="results">
       <thead><tr><th></th><th>Context's influence</th><th>Measured</th><th>How the measured difference splits</th></tr></thead>
       <tbody>
@@ -510,7 +512,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
         ${resultRow("Tokens", "tokens", formatTokens)}
       </tbody>
     </table>
-    ${ce.tldr?.bullets.length ? `<ul class="points">${ce.tldr.bullets.map(b => `<li>${escapeHtml(b)}</li>`).join("")}</ul>` : ""}
+    ${ce.tldr?.bullets.length ? `<ul class="points">${ce.tldr.bullets.map(b => `<li>${typeset(b)}</li>`).join("")}</ul>` : ""}
     ${ce.episodes.length ? `<details class="ledger"><summary>How these numbers are worked out (${ce.episodes.length} episodes)</summary>
       ${workings()}
       <table class="tool-table">

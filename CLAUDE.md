@@ -3,9 +3,7 @@
 Two tools for measuring what Unblocked adds to a coding agent:
 
 - `bun run compare` (`src/`) — A/B: run a task in a coding agent (Claude Code, Cursor or Codex) with and without the Unblocked tools, then compare results.
-- `bun run simulate` (`src/simulate/`) — context engine simulator: a baseline arm plans and implements from the task alone; a context arm first gathers a context briefing from the codebase and MCP sources. Both are scored against acceptance criteria. Agents: Claude Code, Codex, Cursor.
-
-The two are separate tools: `src/simulate/` has its own agent invokers, prompts and reports and shares only the price table (`src/util.ts`). The sections below cover `compare`, except the `src/simulate/` entry under Architecture; the README's "Context engine simulator" section covers `simulate`.
+- `bun run simulate` (`src/simulate/index.ts`) — the same harness with a simulated context engine in place of Unblocked: the Unblocked arm's `unblocked` CLI is a shim (`src/engine/`) that runs a read-only research agent (the same agent CLI, with its MCP servers) in the original repo and returns Unblocked-format results. Takes YAML fixtures and `--criteria`.
 
 ## Running
 
@@ -27,7 +25,7 @@ Binary overrides: `CLAUDE_BINARY` (default `claude`), `CURSOR_BINARY` (default `
 - `src/runner.ts` — Orchestrate: batches, parallel arm execution, review loop, diff capture, nudges
 - `src/agents/` — One adapter per agent CLI (`claude.ts`, `cursor.ts`, `codex.ts`): per-worktree Unblocked blocking, spawn args, resume, and a translator into the canonical transcript. `session.ts` is the shared spawn loop with the timeout and contamination guards
 - `src/transcript.ts` — Canonical transcript parser. The canonical format is Claude Code's stream-json; every analysis reads it
-- `src/worktree.ts` — Worktree creation and cleanup
+- `src/worktree.ts` — Isolated per-arm clones (`--shared`, base commit only, submodules from local copies) and push blocking (`noPushEnv`); outward-action guard patterns are in `src/unblocked-cli.ts`
 - `src/review.ts` — Shared requirement list, per-round check, disputes and waivers
 - `src/analyst.ts` — Structured single-turn model calls, blinding
 - `src/attribution.ts` — Per-message cost/time walk and work/verify/housekeeping labels
@@ -36,7 +34,8 @@ Binary overrides: `CLAUDE_BINARY` (default `claude`), `CURSOR_BINARY` (default `
 - `src/report.ts` — Console + HTML + JSON comparison reports, batch summary
 - `src/git.ts`, `src/util.ts`, `src/types.ts` — Git helpers, pricing and formatting, shared types
 - `scripts/report_from_jsonl.ts` — Regenerate a report from saved transcripts
-- `src/simulate/` — the simulator: `index.ts` (CLI, YAML fixtures), `runner.ts` (the two chains), `prompts.ts`, one invoker per agent (`claude.ts`, `codex.ts`, `cursor.ts`), `report.ts`/`html-report.ts`. Sample fixture: `examples/simulate-fixture.yaml`
+- `src/simulate/index.ts` — `simulate` CLI: fixtures and flags → a compare `Config` with `contextEngine` set
+- `src/engine/` — simulated context engine: `cli.ts` (the fake `unblocked`), `shim.ts` (PATH shim, UC_ENGINE_* env, call log), `prompt.ts` (research prompts)
 
 ## Adding an agent
 

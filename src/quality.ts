@@ -131,10 +131,11 @@ const SCHEMA = {
 
 function judgePrompt(task: string, first: ArmResult, second: ArmResult, spec: ReviewSpec | undefined): string {
   const waived = new Set((spec?.adjudications ?? []).filter(a => a.waived).map(a => a.index));
+  const revised = new Map((spec?.revisions ?? []).map(r => [r.index, r]));
   const reviewed = [first, second].some(a => a.review?.passes.length);
   const step1 = spec
     ? `1. The task's requirements are fixed and numbered below. Grade each agent on each one, by its number, met / partial / unmet, with evidence ≤ 12 words drawn from its response or diff. Copy the requirement text as given; do not add, merge or reword requirements. Skip the ones marked waived, and read a requirement marked "does not cover X" as excluding X for both agents.${reviewed ? " A requirement check has already graded each agent's final revision against this list; its record is under each agent's response. Start from those grades: keep a grade unless the diff or the verification record plainly contradicts it, and when you change one, say why in the evidence." : ""}
-${spec.requirements.map((r, i) => `   ${i + 1}. ${r}${waived.has(i) ? "   [waived — do not grade]" : (spec.adjudications.filter(a => a.index === i && a.excludes).map(a => a.excludes).length ? `   [does not cover: ${spec.adjudications.filter(a => a.index === i && a.excludes).map(a => a.excludes).join("; ")}]` : "")}`).join("\n")}`
+${revised.size ? `   Requirements marked REVISED were restated from evidence one agent found (a team decision the task's wording did not carry), verified against that agent's tool results. Grade BOTH agents against the revised form: an agent that built the original wording where the team intends otherwise has not met it, and meeting the revised form is not a deviation.\n` : ""}${spec.requirements.map((r, i) => `   ${i + 1}. ${revised.has(i) ? `${revised.get(i)!.revised}   [REVISED from "${r}": ${revised.get(i)!.reason}]` : r}${waived.has(i) ? "   [waived — do not grade]" : (spec.adjudications.filter(a => a.index === i && a.excludes).map(a => a.excludes).length ? `   [does not cover: ${spec.adjudications.filter(a => a.index === i && a.excludes).map(a => a.excludes).join("; ")}]` : "")}`).join("\n")}`
     : `1. Extract the task's explicit requirements, one per distinct thing it asks for, each ≤ 10 words, numbered from 1. For each, grade each agent met / partial / unmet with evidence ≤ 12 words drawn from its response or diff.`;
   return `Two autonomous coding agents, A and B, were given the same task in identical copies of the same repository. You are judging the quality of what each produced. You will see the task, then for each agent its final written response, the verification commands it ran with the end of their output, and its diff. Judge only from this material. Do not guess at anything you cannot see.
 
@@ -190,7 +191,8 @@ export async function assessQuality(result: ComparisonResult, model: string): Pr
   const raw = res.data;
 
   const pick = <T>(row: { A: T; B: T }, c: Condition): T => (cond("A") === c ? row.A : row.B);
-  const nameOf = (l: "A" | "B") => (cond(l) === "baseline" ? "Baseline" : "Unblocked");
+  const treatment = result.contextEngine === "simulated" ? "Simulated Context" : "Unblocked";
+  const nameOf = (l: "A" | "B") => (cond(l) === "baseline" ? "Baseline" : treatment);
   const unblind = (t: string) => t.replace(/\b[Aa]gent ([AB])\b/g, (_, l: "A" | "B") => nameOf(l));
   const ub = <T extends Record<string, unknown>>(o: T): T => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, typeof v === "string" ? unblind(v) : v])) as T;
   const q: QualityAssessment = {
@@ -200,7 +202,8 @@ export async function assessQuality(result: ComparisonResult, model: string): Pr
     requirements: raw.requirements.map(r => {
       const i = r.index - 1;
       const shared = result.reviewSpec && i >= 0 && i < result.reviewSpec.requirements.length;
-      return { ...(shared ? { index: i } : {}), requirement: shared ? result.reviewSpec!.requirements[i] : unblind(r.requirement), baseline: ub(pick(r, "baseline")), unblocked: ub(pick(r, "unblocked")) };
+      const revision = shared ? result.reviewSpec!.revisions?.find(x => x.index === i) : undefined;
+      return { ...(shared ? { index: i } : {}), requirement: revision ? revision.revised : shared ? result.reviewSpec!.requirements[i] : unblind(r.requirement), ...(revision ? { revisedFrom: result.reviewSpec!.requirements[i] } : {}), baseline: ub(pick(r, "baseline")), unblocked: ub(pick(r, "unblocked")) };
     }),
     criteria: raw.criteria.map(c => ({ criterion: c.key, baseline: ub(pick(c, "baseline")), unblocked: ub(pick(c, "unblocked")) })),
     findings: raw.findings.map(f => ({ arm: cond(f.arm), finding: unblind(f.finding), evidence: unblind(f.evidence) })),

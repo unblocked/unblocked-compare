@@ -3,7 +3,10 @@ import path from "node:path";
 import type { ArmResult, ComparisonResult, Met, ToolCall } from "./types.ts";
 import { formatCost, formatDiffSummary, formatDuration, formatTokens, modelCost, padLeft, padRight, priceFor, totalTokens, uncachedTokens } from "./util.ts";
 import { AGENTS, type AgentName } from "./agents/index.ts";
+import { reconcile, type Totals } from "./context-effect.ts";
+import { BATCH_CSS, COUNT_UP, FONTS, REPORT_CSS } from "./report-style.ts";
 import type { TokenUsage } from "./types.ts";
+import { unblockedCommand } from "./unblocked-cli.ts";
 
 const W = 78;
 
@@ -44,13 +47,13 @@ function wrap(text: string, width: number): string[] {
   return out;
 }
 
-export function toolCategory(tc: ToolCall): string {
+function toolCategory(tc: ToolCall): string {
   if (tc.isMcp) {
     return tc.mcpServer?.toLowerCase().includes("unblocked") ? "Unblocked" : `MCP:${tc.mcpServer}`;
   }
   if (tc.name === "Bash") {
     const cmd = (tc.args.command as string) ?? "";
-    if (/^unblocked\s+/.test(cmd)) return "Unblocked";
+    if (unblockedCommand(cmd)) return "Unblocked";
     return bashWritesFiles(cmd) ? "Bash (writes files)" : "Bash";
   }
   return tc.name;
@@ -92,11 +95,11 @@ function sharedRequirementsTable(result: ComparisonResult): string {
   };
   const paidFor = (arm: ArmResult, index: number) => (arm.review?.passes ?? []).filter(p => p.fix && !(p.waiversInForce ?? []).includes(index) && p.requirements.some(r => r.index === index && (r.status === "unmet" || r.status === "partial"))).length;
   const adj = spec.adjudications.map(a => {
-    const cost = a.waived ? [["Baseline", result.baseline], ["With Unblocked", result.unblocked]].map(([n, arm]) => [n, paidFor(arm as ArmResult, a.index)] as const).filter(([, k]) => k > 0).map(([n, k]) => `${n} had already spent ${k} fix pass(es) on it before the waiver`).join("; ") : "";
-    return `<li>Requirement ${a.index + 1}, disputed by ${a.disputedBy === "unblocked" ? "the Unblocked arm" : "the baseline arm"} in round ${a.round}: <b>${a.waived ? "waived for both arms" : a.excludes ? `stands, but does not cover ${escapeHtml(a.excludes)} (both arms)` : "dispute rejected"}</b>. ${escapeHtml(a.reason)}${cost ? ` <span class="met met-partial">${escapeHtml(cost)}</span>` : ""}</li>`;
+    const cost = a.waived ? [["Baseline", result.baseline], [L.arm, result.unblocked]].map(([n, arm]) => [n, paidFor(arm as ArmResult, a.index)] as const).filter(([, k]) => k > 0).map(([n, k]) => `${n} had already spent ${k} fix pass(es) on it before the waiver`).join("; ") : "";
+    return `<li>Requirement ${a.index + 1}, disputed by ${a.disputedBy === "unblocked" ? `the ${L.short} arm` : "the baseline arm"} in round ${a.round}: <b>${a.waived ? "waived for both arms" : a.excludes ? `stands, but does not cover ${escapeHtml(a.excludes)} (both arms)` : "dispute rejected"}</b>. ${escapeHtml(a.reason)}${cost ? ` <span class="met met-partial">${escapeHtml(cost)}</span>` : ""}</li>`;
   }).join("");
   return `<div class="tool-table-wrap"><table class="tool-table">
-      <thead><tr><th>Requirement (same list for both arms)</th><th>Baseline</th><th>With Unblocked</th></tr></thead>
+      <thead><tr><th>Requirement (same list for both arms)</th><th>Baseline</th><th>${L.arm}</th></tr></thead>
       <tbody>${spec.requirements.map((req, i) => `<tr><td>${i + 1}. ${escapeHtml(req)}</td>${cell(result.baseline, i)}${cell(result.unblocked, i)}</tr>`).join("")}</tbody>
     </table></div>${adj ? `<ul class="section-note" style="margin: 8px 0 0 18px;">${adj}</ul>` : ""}`;
 }
@@ -104,7 +107,7 @@ function sharedRequirementsTable(result: ComparisonResult): string {
 function stallNote(b: ArmResult, u: ArmResult): string {
   const bs = b.attribution?.raw.stallMs ?? 0, us = u.attribution?.raw.stallMs ?? 0;
   if (bs <= 0 && us <= 0) return "";
-  return `<div class="section-note">Stalled time excluded from all figures: baseline ${formatDuration(bs)}, with Unblocked ${formatDuration(us)}. A model wait longer than five minutes is the machine asleep or the API down, not generation.</div>`;
+  return `<div class="section-note">Stalled time excluded from all figures: baseline ${formatDuration(bs)}, with ${L.short} ${formatDuration(us)}. A model wait longer than five minutes is the machine asleep or the API down, not generation.</div>`;
 }
 
 function housekeepingKinds(arm: ArmResult): string {
@@ -146,7 +149,7 @@ function slowestTools(toolCalls: ToolCall[], n: number): ToolCall[] {
     .slice(0, n);
 }
 
-export function toolLabel(tc: ToolCall): string {
+function toolLabel(tc: ToolCall): string {
   if (tc.name === "Bash") return `Bash: ${((tc.args.command as string) ?? "").replace(/\s+/g, " ").slice(0, 90)}`;
   if (tc.isMcp) return `${toolCategory(tc)}: ${((tc.args.query as string) ?? (tc.args.url as string) ?? "").slice(0, 80)}`;
   const fp = (tc.args.file_path as string) ?? "";
@@ -218,6 +221,7 @@ function armSummary(label: string, arm: ArmResult): string[] {
 }
 
 export function printReport(result: ComparisonResult): void {
+  L = labelsFor(result);
   const b = result.baseline;
   const u = result.unblocked;
 
@@ -228,16 +232,17 @@ export function printReport(result: ComparisonResult): void {
     divider(),
     r(`  Repo:     ${repoName(result.repo)}`),
     r(`  Branch:   ${result.branch}`),
-    r(`  Agent:    ${agentLabel(result)}`),
+    r(`  Agent:    ${agentLabel(result)}${result.contextEngine === "simulated" ? " · simulated context engine" : ""}`),
+    ...tldrLines(result).map(l => r(l)),
     r(`  Model:    ${result.model}`),
     r(`  Task:     ${result.task.slice(0, 60)}${result.task.length > 60 ? "..." : ""}`),
 
     divider(),
     blank(),
-    ...armSummary("Baseline (no Unblocked)", b).map(s => r(s)),
+    ...armSummary(L.baseline, b).map(s => r(s)),
 
     blank(),
-    ...armSummary("With Unblocked", u).map(s => r(s)),
+    ...armSummary(L.arm, u).map(s => r(s)),
 
     divider(),
     blank(),
@@ -255,7 +260,7 @@ export function printReport(result: ComparisonResult): void {
       r("  2 · HOUSEKEEPING  (model habit: tidying, committing, redundant reruns — not context-driven)"),
       r(`  ${"─".repeat(W - 2)}`),
       r(`  ${padRight("Baseline", 28)}${padLeft(String(b.attribution.housekeeping.turns), 4)} turns  ${padLeft(formatCost(b.attribution.housekeeping.costUsd), 9)}  ${padLeft(formatDuration(b.attribution.housekeeping.durationMs), 8)}  ${housekeepingKinds(b).slice(0, 40)}`),
-      r(`  ${padRight("Unblocked", 28)}${padLeft(String(u.attribution.housekeeping.turns), 4)} turns  ${padLeft(formatCost(u.attribution.housekeeping.costUsd), 9)}  ${padLeft(formatDuration(u.attribution.housekeeping.durationMs), 8)}  ${housekeepingKinds(u).slice(0, 40)}`),
+      r(`  ${padRight(L.short, 28)}${padLeft(String(u.attribution.housekeeping.turns), 4)} turns  ${padLeft(formatCost(u.attribution.housekeeping.costUsd), 9)}  ${padLeft(formatDuration(u.attribution.housekeeping.durationMs), 8)}  ${housekeepingKinds(u).slice(0, 40)}`),
       ...((b.attribution.raw.stallMs > 0 || u.attribution.raw.stallMs > 0) ? [r(`  ${padRight("Stalled (excluded)", 28)}${padLeft(formatDuration(b.attribution.raw.stallMs), 10)}  →  ${padLeft(formatDuration(u.attribution.raw.stallMs), 10)}   machine sleep or API outage`)] : []),
       r(`  ${padRight("Raw totals (incl. hk)", 28)}${padLeft(formatCost(b.estimatedCost), 10)}  →  ${padLeft(formatCost(u.estimatedCost), 10)}   ${padLeft(formatDuration(b.run.durationMs), 8)} → ${formatDuration(u.run.durationMs)}`),
     ] : [
@@ -308,6 +313,9 @@ export function printReport(result: ComparisonResult): void {
 
   lines.push(blank());
   lines.push(r(`  Longest arm: ${formatDuration(result.totalDurationMs)}    Arms cost: ${formatCost(result.totalEstimatedCost)}${result.analysisCostUsd ? `    Analysis: ${formatCost(result.analysisCostUsd)}` : ""}`));
+  const engine = result.unblocked.contextEngine;
+  if (engine) lines.push(r(`  Simulated context engine: ${engine.calls.length} call(s), ${formatDuration(engine.durationMs)}, ${formatCost(engine.costUsd)} (not in arms cost)`));
+  if (engine?.discountedMs) lines.push(r(`    research time counted as ≤${formatDuration(engine.capMs ?? 0)} per call: ${formatDuration(engine.discountedMs)} removed from ${L.short} timings`));
   lines.push("╚" + "═".repeat(W + 2) + "╝");
   lines.push("");
 
@@ -352,6 +360,7 @@ function barWidth(value: number, max: number): number {
 }
 
 export function writeHtmlReport(result: ComparisonResult, outDir: string): string {
+  L = labelsFor(result);
   const b = result.baseline;
   const u = result.unblocked;
   const toolsB = toolBreakdown(b.run.toolCalls);
@@ -384,18 +393,20 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
     const usd = (n: number) => (n >= 0 ? "+" : "−") + "$" + Math.abs(n).toFixed(2);
     const tok = (n: number) => (n >= 0 ? "+" : "−") + formatTokens(Math.abs(n));
     const min = (ms: number) => (ms >= 0 ? "+" : "−") + formatDuration(Math.abs(ms));
+    const allTok = (x: { inputTokens: number; cacheWriteTokens: number; cacheReadTokens: number; outputTokens: number }) => x.inputTokens + x.cacheWriteTokens + x.cacheReadTokens + x.outputTokens;
     const para = (title: string, text: string | undefined, facts: string) => `
       <div class="finding" style="margin-bottom: 8px;"><b>${title}</b>${text ? `<div style="margin-top: 4px;">${escapeHtml(text)}</div>` : ""}<div class="evidence" style="margin-top: 6px;">${facts}</div></div>`;
     const toolKinds = Object.entries(e.time.toolWaitDelta).filter(([, v]) => Math.abs(v) >= 1000).sort((a, b2) => Math.abs(b2[1]) - Math.abs(a[1])).map(([k, v]) => `${escapeHtml(k)} ${min(v)}`).join(", ");
     return `
-    <div class="section-title" style="font-size: 15px; margin-top: 24px;">Explanation of numbers <span class="section-sub">Unblocked relative to baseline${e.basis === "raw" ? "; whole-run figures, attribution missing for at least one arm" : ""}</span></div>
+    <div class="section-title" style="font-size: 15px; margin-top: 24px;">Why the measured numbers differ <span class="section-sub">${L.short} relative to baseline${e.basis === "raw" ? "; whole-run figures, attribution missing for at least one arm" : ""}</span></div>
     <div class="findings">
       ${para("Cost " + usd(e.cost.deltaUsd), ex?.cost, `output ${usd(e.cost.terms.output)} · cache-read ${usd(e.cost.terms.cacheRead)} · cache-write ${usd(e.cost.terms.cacheWrite)} · input ${usd(e.cost.terms.input)}${Math.abs(e.cost.unexplainedUsd) >= 0.01 ? ` · residual ${usd(e.cost.unexplainedUsd)}` : ""}`)}
       ${para("Time " + min(e.time.deltaMs), ex?.time, `model time ${min(e.time.modelDeltaMs)} · tool wait ${min(e.time.toolDeltaMs)}${toolKinds ? ` (${toolKinds})` : ""}`)}
-      ${para("Tokens: output " + tok(e.output.deltaTokens) + ", cache-read " + tok(e.cacheRead.deltaTokens), ex?.tokens, `output = thinking ${tok(e.output.thinkingDelta)} + visible ${tok(e.output.visibleDelta)} · cache-read: research context carried ≈ ${tok(e.cacheRead.researchCarriedTokens)}, average context per message ${tok(e.cacheRead.contextPerMessageDelta)}, messages ${e.cacheRead.messagesDelta >= 0 ? "+" : ""}${e.cacheRead.messagesDelta} · Unblocked research: ${e.unblocked.research.calls} calls, ≈${formatTokens(e.unblocked.research.payloadTokens)} tokens returned`)}
+      ${para("Tokens " + tok(allTok(e.unblocked) - allTok(e.baseline)), ex?.tokens, `input ${tok(e.unblocked.inputTokens - e.baseline.inputTokens)} · cache-write ${tok(e.unblocked.cacheWriteTokens - e.baseline.cacheWriteTokens)} · cache-read ${tok(e.cacheRead.deltaTokens)} · output ${tok(e.output.deltaTokens)}<br>output = thinking ${tok(e.output.thinkingDelta)} + visible ${tok(e.output.visibleDelta)} · cache-read: research context carried ≈ ${tok(e.cacheRead.researchCarriedTokens)}, average context per message ${tok(e.cacheRead.contextPerMessageDelta)}, messages ${e.cacheRead.messagesDelta >= 0 ? "+" : ""}${e.cacheRead.messagesDelta} · ${L.short} research: ${e.unblocked.research.calls} calls, ≈${formatTokens(e.unblocked.research.payloadTokens)} tokens returned`)}
     </div>`;
   };
 
+  const coreTokens = (arm: ArmResult) => { const c = arm.attribution!.core; return c.inputTokens + c.cacheWriteTokens + c.cacheReadTokens + c.outputTokens; };
   const heroCard = (label: string, bVal: number, uVal: number, fmt: (n: number) => string) => {
     const pct = pctChange(bVal, uVal);
     const cls = pct === "N/A" || /^[+-]?0%$/.test(pct) ? " neutral" : uVal < bVal ? " positive" : " negative";
@@ -406,6 +417,169 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
       <div class="hero-detail">${fmt(bVal)} &rarr; ${fmt(uVal)}</div>
     </div>`;
   };
+
+  // Summary: the quality verdict, then each number as the context's influence
+  // and as measured, with a bar showing how the measured difference splits
+  // (the parts add up to it exactly).
+  const ce = result.contextEffect;
+  const signed = (n: number, fmt: (n: number) => string) => `${n < 0 ? "&minus;" : "+"}${fmt(Math.abs(n))}`;
+  // Model-written text: real arrows and minus signs.
+  const typeset = (t: string) => escapeHtml(t).replace(/\s*-&gt;\s*/g, " &rarr; ").replace(/(^|[\s(\/])-(?=\$?\d)/g, "$1&minus;");
+  const usd2 = (n: number) => `$${n.toFixed(2)}`;
+  const pctHtml = (s: string) => s.replace(/^-/, "&minus;");
+  // Plain comparison: one bar per arm, then at most three short lines saying
+  // what made the difference, green when it saved and red when it cost more.
+  const without = L.short === "Unblocked" ? "Without Unblocked" : "Without context";
+  const plain = (n: number, fmt: (n: number) => string, unit: string) => `${fmt(Math.abs(n))}${unit}`;
+  // A waterfall: start without the context, take off or add what the context
+  // did, then what the agent did on its own (its mistakes and all other work
+  // the context did not influence), and end with it. Green takes away, red adds; every bar has its label in its row.
+  const compareBlock = (label: string, key: keyof Totals, fmt: (n: number) => string) => {
+    const e = ce!;
+    const bv = e.baseline[key], uv = e.unblocked[key];
+    const r = reconcile(e, key);
+    const ctxName = L.short === "Unblocked" ? "Unblocked's context" : "The context";
+    const small = (v: number) => Math.abs(v) < Math.max(bv, uv) * 0.01;
+    const steps: [string, string, number, boolean][] = ([
+      [`${ctxName} saved`, `${ctxName} added`, r.influence, true],
+      ["Agent's own choices saved", "Agent's own choices added", r.ownMistakes + r.other, false],
+    ] as [string, string, number, boolean][]).filter(([, , v]) => !small(v));
+    let run = bv, peak = bv;
+    for (const [, , v] of steps) { run += v; peak = Math.max(peak, run); }
+    const max = Math.max(peak, uv) || 1;
+    const pos = (from: number, to: number) => `left: ${((Math.min(from, to) / max) * 100).toFixed(2)}%; width: ${((Math.abs(to - from) / max) * 100).toFixed(2)}%`;
+    const raw = pctChange(bv, uv);
+    const rawCls = raw === "N/A" || /^[+-]?0%$/.test(raw) ? "" : uv < bv ? "better" : "worse";
+    const row = (name: string, cls: string, from: number, to: number, value: string, strong = false) =>
+      `<div class="wf-row${strong ? " strong" : ""}"><span class="wf-name">${name}</span><div class="wf-track"><span class="wf-bar ${cls}" style="${pos(from, to)}"></span></div><span class="wf-val ${cls}">${value}</span></div>`;
+    run = bv;
+    const stepRows = steps.map(([saved, added, v, isCtx]) => {
+      const from = run; run += v;
+      return row(`${v < 0 ? saved : added}${isCtx ? ` (${pctChange(bv, bv + v).replace(/^[-+]/, "")})` : ""}`, v < 0 ? "down" : "up", from, run, `${v < 0 ? "&minus;" : "+"}${fmt(Math.abs(v))}`, isCtx);
+    }).join("");
+    return `
+      <div class="cmp">
+        <h3 class="cmp-label">${label}</h3>
+        <div class="wf">
+          ${row(without, "base", 0, bv, fmt(bv))}
+          ${stepRows}
+          ${row(escapeHtml(L.arm), "ctx", 0, uv, `${fmt(uv)}${rawCls ? ` <em class="${rawCls}">${pctHtml(raw)} overall</em>` : ""}`)}
+        </div>
+      </div>`;
+  };
+  const causeLabel = { context: "context", agent: "agent, not context", environment: "environment" } as const;
+  // The arithmetic behind the Summary, from the episode sums below it.
+  const workings = () => {
+    const e = ce!;
+    const keys: [keyof Totals, (n: number) => string][] = [["costUsd", usd2], ["durationMs", formatDuration], ["tokens", formatTokens]];
+    const pick = (arm: "baseline" | "unblocked", ctx: boolean) => (k: keyof Totals) => e.episodes.filter(x => x.arm === arm && (x.cause === "context") === ctx).reduce((t, x) => t + x[k], 0);
+    const row = (label: string, f: (k: keyof Totals) => number, cls = "", sign = false) =>
+      `<tr${cls ? ` class="${cls}"` : ""}><td>${label}</td>${keys.map(([k, fmt]) => `<td>${sign ? signed(f(k), fmt) : fmt(f(k))}</td>`).join("")}</tr>`;
+    const pctRow = (label: string, from: (k: keyof Totals) => number, to: (k: keyof Totals) => number) =>
+      `<tr class="total-row"><td>${label}</td>${keys.map(([k]) => `<td>${pctHtml(pctChange(from(k), to(k)))}</td>`).join("")}</tr>`;
+    const r = (k: keyof Totals) => reconcile(e, k);
+    return `
+      <table class="tool-table workings">
+        <thead><tr><th>Context's influence</th><th>Cost</th><th>Time</th><th>Tokens</th></tr></thead>
+        <tbody>
+          ${row("Baseline, core work", k => e.baseline[k])}
+          ${row(`+ ${escapeHtml(L.short)} arm's context episodes`, pick("unblocked", true), "", true)}
+          ${row("&minus; Baseline's episodes for lack of the context", k => -pick("baseline", true)(k), "", true)}
+          ${row("= Baseline with the context's influence", k => e.adjustedUnblocked[k], "total-row")}
+          ${pctRow("Context's influence", k => e.adjustedBaseline[k], k => e.adjustedUnblocked[k])}
+        </tbody>
+      </table>
+      <table class="tool-table workings">
+        <thead><tr><th>Measured difference</th><th>Cost</th><th>Time</th><th>Tokens</th></tr></thead>
+        <tbody>
+          ${row(`${escapeHtml(L.short)} arm, core work`, k => e.unblocked[k])}
+          ${row("&minus; Baseline, core work", k => -e.baseline[k], "", true)}
+          ${row("= Measured difference", k => r(k).measured, "total-row", true)}
+          ${row("of which: context's influence", k => r(k).influence, "", true)}
+          ${row(`of which: agents' own mistakes (${escapeHtml(L.short)} arm's agent and environment episodes, minus the Baseline's)`, k => r(k).ownMistakes, "", true)}
+          ${row("of which: other work (turns no episode covers)", k => r(k).other, "", true)}
+        </tbody>
+      </table>`;
+  };
+  const qualityRow = () => {
+    const q = result.quality;
+    if (!q) return "";
+    const better = q.verdict.better;
+    const score = (c: "baseline" | "unblocked") => {
+      const reqs = q.requirements.map(r => r[c].status);
+      const met = reqs.filter(s => s === "met").length, partial = reqs.filter(s => s === "partial").length;
+      return `${met} of ${reqs.length} met${partial ? `, ${partial} partial` : ""}`;
+    };
+    return `
+      <tr class="quality-row">
+        <th scope="row">Quality</th>
+        <td colspan="3"><span class="fig${better === "unblocked" ? " better" : better === "baseline" ? " worse" : ""}">${better === "tie" ? "Tie" : better === "unblocked" ? `${escapeHtml(L.short)} better` : "Baseline better"}</span>
+          <span class="range">Requirements: Baseline ${score("baseline")}; ${escapeHtml(L.short)} ${score("unblocked")}.${q.verdict.tieBreaker?.applied ? " The blinded judge called a tie; a context-led discovery broke it." : ""}</span></td>
+      </tr>`;
+  };
+  // The opening: the task, the verdict in a sentence, and the scoreboard.
+  const [taskHead, ...taskTail] = result.task.trim().split("\n");
+  const taskTitle = taskHead.length <= 110 ? taskHead : "";
+  const taskRest = (taskTitle ? taskTail.join("\n") : result.task).trim();
+  const boardCell = (label: string, key: keyof Totals, fmt: (n: number) => string) => {
+    const e = ce!;
+    const infl = pctChange(e.adjustedBaseline[key], e.adjustedUnblocked[key]);
+    const cls = infl === "N/A" || /^[+-]?0%$/.test(infl) ? "" : e.adjustedUnblocked[key] < e.adjustedBaseline[key] ? " better" : " worse";
+    const n = parseInt(infl, 10);
+    const saved = e.adjustedUnblocked[key] - e.adjustedBaseline[key];
+    return `<div class="cell"><div class="cell-label">${label}</div><div class="cell-fig${cls}"${Number.isFinite(n) ? ` data-count="${n}"` : ""}>${pctHtml(infl)}</div><div class="cell-sub">${saved < 0 ? `Context saved ${fmt(-saved)} of ${fmt(e.baseline[key])}` : saved > 0 ? `Context added ${fmt(saved)} to ${fmt(e.baseline[key])}` : "Context made no difference"}</div><div class="cell-sub">Overall: ${fmt(e.baseline[key])} &rarr; ${fmt(e.unblocked[key])} (${pctHtml(pctChange(e.baseline[key], e.unblocked[key]))})</div></div>`;
+  };
+  const qualityCell = () => {
+    const q = result.quality;
+    if (!q) return `<div class="cell"><div class="cell-label">Quality</div><div class="cell-fig word">Not judged</div></div>`;
+    const better = q.verdict.better;
+    const score = (c: "baseline" | "unblocked") => {
+      const reqs = q.requirements.map(r => r[c].status);
+      const met = reqs.filter(s => s === "met").length, partial = reqs.filter(s => s === "partial").length;
+      return `${met} of ${reqs.length} met${partial ? `, ${partial} partial` : ""}`;
+    };
+    return `<div class="cell"><div class="cell-label">Quality with ${escapeHtml(L.short)}</div><div class="cell-fig word${better === "unblocked" ? " better" : better === "baseline" ? " worse" : ""}">${better === "tie" ? "Tie" : better === "unblocked" ? "Better" : "Worse"}</div><div class="cell-sub">${escapeHtml(L.short)} ${score("unblocked")}</div><div class="cell-sub">Baseline ${score("baseline")}${q.verdict.tieBreaker?.applied ? "; blinded tie, broken by a context-led discovery" : ""}</div></div>`;
+  };
+  const facts = `<dl class="facts">
+      <div><dt>Repository</dt><dd>${escapeHtml(repoName(result.repo))}</dd></div>
+      <div><dt>Branch</dt><dd>${escapeHtml(result.branch)}</dd></div>
+      <div><dt>Agent</dt><dd>${escapeHtml(agentLabel(result))}</dd></div>
+      <div><dt>Model</dt><dd>${escapeHtml(result.model)}</dd></div>
+    </dl>`;
+  const heroHtml = !ce ? "" : `
+  <header class="hero">
+    <p class="hero-meta"><span>Unblocked Compare</span><span>${new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}</span></p>
+    <p class="hero-vs">${escapeHtml(L.vs)}</p>
+    ${taskTitle ? `<h1 class="hero-task">${escapeHtml(taskTitle)}</h1>` : `<h1 class="hero-task">${escapeHtml(L.vs)}</h1>`}
+    ${taskRest ? `<p class="hero-task-rest">${escapeHtml(taskRest)}</p>` : ""}
+    ${ce.tldr ? `<p class="hero-lede">${typeset(ce.tldr.headline)}</p>` : ""}
+    <div class="board">
+      ${qualityCell()}
+      ${boardCell("Cost", "costUsd", usd2)}
+      ${boardCell("Time", "durationMs", formatDuration)}
+      ${boardCell("Tokens", "tokens", formatTokens)}
+    </div>
+    ${facts}
+  </header>`;
+  const tldrSection = !ce ? "" : `
+  <section class="section summary">
+    <h2 class="section-title">What drove it</h2>
+    ${ce.tldr?.bullets.length ? `<ul class="points">${ce.tldr.bullets.map(b => `<li>${typeset(b)}</li>`).join("")}</ul>` : ""}
+    <h2 class="section-title">${without} vs ${escapeHtml(L.arm.replace(/^With/, "with"))}</h2>
+    <div class="cmps">
+      ${compareBlock("Cost", "costUsd", usd2)}
+      ${compareBlock("Time", "durationMs", formatDuration)}
+      ${compareBlock("Tokens", "tokens", formatTokens)}
+    </div>
+    ${ce.episodes.length ? `<details class="ledger"><summary>How these numbers are worked out (${ce.episodes.length} episodes)</summary>
+      ${workings()}
+      <table class="tool-table">
+        <thead><tr><th>Arm</th><th>Turns</th><th>Cause</th><th>What</th><th>Time</th><th>Cost</th><th>Tokens</th></tr></thead>
+        <tbody>${ce.episodes.map(e => `<tr${e.cause === "context" ? ` class="highlight-row"` : ""}><td>${e.arm === "baseline" ? "Baseline" : escapeHtml(L.short)}</td><td class="nowrap">T${e.fromTurn}&ndash;T${e.toTurn}</td><td>${causeLabel[e.cause]}</td><td>${escapeHtml(e.what)}</td><td class="nowrap">${formatDuration(e.durationMs)}</td><td class="nowrap">${usd2(e.costUsd)}</td><td class="nowrap">${formatTokens(e.tokens)}</td></tr>`).join("")}</tbody>
+      </table>
+      <p class="section-note">Core work, housekeeping removed; the same figures as section 1. Episodes and causes come from the un-blinded impact pass; their time, cost and tokens are summed from the per-message figures. "Context's influence" is the Baseline plus the differences the context influenced, for better or worse: turns it shaped in the ${escapeHtml(L.short)} arm, minus the Baseline's work for lack of it. Choices each agent made on its own, and environment noise, drop out of both arms.</p>
+    </details>` : ""}
+  </section>`;
 
   const housekeepingLedger = (label: string, arm: ArmResult) => {
     const rows = arm.attribution!.turns.filter(t => t.label === "housekeeping");
@@ -418,7 +592,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
           <tbody>${rows.map(t => `
           <tr>
             <td>${t.turn}</td><td>${formatCost(t.costUsd)}</td><td>${formatDuration(t.durationMs)}</td>
-            <td style="font-family: 'SF Mono', 'Fira Code', Consolas, monospace; font-size: 12px;">${escapeHtml(t.summary)}</td>
+            <td style="font-family: var(--mono); font-size: 12px;">${escapeHtml(t.summary)}</td>
             <td style="font-size: 12px; color: var(--text-muted);">${escapeHtml(t.reason)}${t.repeatOf ? ` (repeats turn ${t.repeatOf})` : ""}</td>
           </tr>`).join("")}</tbody>
         </table>
@@ -444,29 +618,28 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
     const has = totalTokens(t) > 0;
     const a = arm.attribution;
     const head = a
-      ? { dur: a.core.durationMs, cost: a.core.costUsd, out: a.core.outputTokens, turns: a.core.turns, tag: "core" }
-      : { dur: arm.run.durationMs, cost: arm.estimatedCost, out: t.outputTokens, turns: arm.run.assistantTurns, tag: "" };
+      ? { dur: a.core.durationMs, cost: a.core.costUsd, tokens: coreTokens(arm), turns: a.core.turns, tag: "Core" }
+      : { dur: arm.run.durationMs, cost: arm.estimatedCost, tokens: totalTokens(t), turns: arm.run.assistantTurns, tag: "" };
+    const cap = (x: string) => head.tag ? `${head.tag} ${x.toLowerCase()}` : x;
     return `
-    <div class="arm-section"${accent ? ` style="border-color: rgba(59, 130, 246, 0.3);"` : ""}>
-      <div class="arm-header"${accent ? ` style="border-bottom-color: rgba(59, 130, 246, 0.2);"` : ""}>
+    <div class="arm-section${accent ? " context-arm" : ""}">
+      <div class="arm-header">
         <span class="arm-name">${escapeHtml(label)}${arm.run.killedReason ? ` <span style="color: var(--red); font-size: 12px;">(KILLED: ${escapeHtml(arm.run.killedReason)})</span>` : arm.run.timedOut ? ` <span style="color: var(--yellow); font-size: 12px;">(TIMED OUT)</span>` : ""}</span>
-        ${a ? `<span style="font-size: 12px; color: var(--text-muted);">core task work · raw incl. housekeeping: ${formatCost(arm.estimatedCost)}, ${formatDuration(arm.run.durationMs)}, ${formatTokens(t.outputTokens)} out</span>` : ""}
+        ${a ? `<span style="font-size: 13px; color: var(--text-muted);">Whole run, housekeeping included: ${formatCost(arm.estimatedCost)}, ${formatDuration(arm.run.durationMs)}, ${formatTokens(totalTokens(t))} tokens</span>` : ""}
       </div>
       <div class="arm-meta">
-        <div class="arm-stat"><div class="arm-stat-val">${formatDuration(head.dur)}</div><div class="arm-stat-label">${head.tag} Duration</div></div>
-        <div class="arm-stat"><div class="arm-stat-val">${has ? formatCost(head.cost) : "N/A"}${arm.run.costEstimated ? ` <span style="font-size: 11px; color: var(--yellow);">(est.)</span>` : ""}</div><div class="arm-stat-label">${head.tag} Cost</div></div>
-        <div class="arm-stat"><div class="arm-stat-val">${has ? formatTokens(head.out) : "N/A"}</div><div class="arm-stat-label">${head.tag} Output Tokens</div></div>
-        <div class="arm-stat"><div class="arm-stat-val">${head.turns}</div><div class="arm-stat-label">${head.tag} ${a ? "Messages" : "Turns"}</div></div>
+        <div class="arm-stat"><div class="arm-stat-val">${has ? formatCost(head.cost) : "N/A"}${arm.run.costEstimated ? ` <span style="font-size: 11px; color: var(--yellow);">(est.)</span>` : ""}</div><div class="arm-stat-label">${cap("Cost")}</div></div>
+        <div class="arm-stat"><div class="arm-stat-val">${formatDuration(head.dur)}</div><div class="arm-stat-label">${cap("Time")}</div></div>
+        <div class="arm-stat"><div class="arm-stat-val">${has ? formatTokens(head.tokens) : "N/A"}</div><div class="arm-stat-label">${cap("Tokens")}</div></div>
+        <div class="arm-stat"><div class="arm-stat-val">${head.turns}</div><div class="arm-stat-label">${cap(a ? "Messages" : "Turns")}</div></div>
       </div>
       ${has ? `<div class="arm-tokens">
-        ${a ? `Core cache read: <span>${formatTokens(a.core.cacheReadTokens)}</span> &nbsp; Housekeeping: <span>${a.housekeeping.turns} msgs, ${formatCost(a.housekeeping.costUsd)}, ${formatDuration(a.housekeeping.durationMs)}</span> &nbsp;` : ""}
-        Raw &mdash; Fresh Input: <span>${formatTokens(t.inputTokens)}</span> &nbsp;
-        Output: <span>${formatTokens(t.outputTokens)}</span> &nbsp;
-        Cache Read: <span>${formatTokens(t.cacheReadTokens)}</span> &nbsp;
-        Cache Write: <span>${formatTokens(t.cacheCreationTokens)}</span>
+        ${a ? `Core tokens: input <span>${formatTokens(a.core.inputTokens)}</span> + cache write <span>${formatTokens(a.core.cacheWriteTokens)}</span> + cache read <span>${formatTokens(a.core.cacheReadTokens)}</span> + output <span>${formatTokens(a.core.outputTokens)}</span>`
+          : `Tokens: input <span>${formatTokens(t.inputTokens)}</span> + cache write <span>${formatTokens(t.cacheCreationTokens)}</span> + cache read <span>${formatTokens(t.cacheReadTokens)}</span> + output <span>${formatTokens(t.outputTokens)}</span>`}
       </div>` : `<div class="arm-tokens" style="color: var(--text-muted);">Token data unavailable</div>`}
       <div class="arm-tokens">
-        ${hasTiming(arm) ? `${arm.attribution ? "" : `Model time (approx., duration minus tool wait): <span>${formatDuration(modelTimeMs(arm))}</span> &nbsp; `}Tool time: <span>${formatDuration(toolTimeMs(arm))}</span> &nbsp;` : ""}
+        ${a ? `Core time: model <span>${formatDuration(a.core.modelMs)}</span> + tool wait <span>${formatDuration(a.core.toolMs)}</span> &nbsp; Housekeeping: <span>${a.housekeeping.turns} msgs, ${formatCost(a.housekeeping.costUsd)}, ${formatDuration(a.housekeeping.durationMs)}</span> &nbsp;`
+          : hasTiming(arm) ? `Model time (approx., duration minus tool wait): <span>${formatDuration(modelTimeMs(arm))}</span> &nbsp; Tool time: <span>${formatDuration(toolTimeMs(arm))}</span> &nbsp;` : ""}
         Diff: <span>${escapeHtml(formatDiffSummary(arm.diffStats))}</span>
       </div>
     </div>`;
@@ -475,7 +648,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   const slowestRows = (arm: ArmResult) => slowestTools(arm.run.toolCalls, 5).map(tc => `
       <tr>
         <td>${formatDuration(tc.durationMs ?? 0)}</td>
-        <td style="font-family: 'SF Mono', 'Fira Code', Consolas, monospace; font-size: 12px;">${escapeHtml(toolLabel(tc))}</td>
+        <td style="font-family: var(--mono); font-size: 12px;">${escapeHtml(toolLabel(tc))}</td>
       </tr>`).join("");
 
   const maxTime = Math.max(b.run.durationMs, u.run.durationMs, 1);
@@ -498,7 +671,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
           <div class="bar-track"><div class="bar-fill baseline" style="width: ${barWidth(bVal, max)}%">${fmt(bVal)}</div></div>
         </div>
         <div class="bar-row">
-          <span class="bar-tag ${better ? "better" : "worse"}">Unblocked</span>
+          <span class="bar-tag ${better ? "better" : "worse"}">${L.short}</span>
           <div class="bar-track"><div class="bar-fill ${better ? "better" : "worse"}" style="width: ${barWidth(uVal, max)}%">${fmt(uVal)}</div></div>
         </div>
       </div>
@@ -520,7 +693,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
         <td>${formatTokens(mu.cacheCreationTokens)}</td>
         <td>${formatCost(modelCost(m, mu))}${typeof mu.costUsd === "number" ? "" : " (est.)"}</td>
       </tr>`).join("");
-  const modelBreakdownRows = perModelRows("Baseline", b) + perModelRows("With Unblocked", u);
+  const modelBreakdownRows = perModelRows("Baseline", b) + perModelRows(L.arm, u);
 
   const modelsUsed = [...new Set([
     ...modelEntries(b.run.tokenUsage).map(([m]) => m),
@@ -545,417 +718,65 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Unblocked Compare — A/B Comparison</title>
-<style>
-  :root {
-    --bg: #0a0a0f;
-    --surface: #12121a;
-    --surface-2: #1a1a26;
-    --border: #2a2a3a;
-    --text: #e4e4ed;
-    --text-muted: #8888a0;
-    --accent: #3b82f6;
-    --accent-light: #93c5fd;
-    --accent-glow: rgba(59, 130, 246, 0.15);
-    --green: #22c55e;
-    --green-bg: rgba(34, 197, 94, 0.1);
-    --red: #ef4444;
-    --yellow: #eab308;
-    --blue: #3b82f6;
-  }
-
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    line-height: 1.6;
-    min-height: 100vh;
-  }
-
-  .container { max-width: 1100px; margin: 0 auto; padding: 40px 24px; }
-
-  .header {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    margin-bottom: 12px;
-  }
-  .logo {
-    width: 44px; height: 44px;
-    background: linear-gradient(135deg, var(--accent), var(--accent-light));
-    border-radius: 10px;
-    display: flex; align-items: center; justify-content: center;
-    font-weight: 800; font-size: 22px; color: white;
-  }
-  .header h1 {
-    font-size: 28px;
-    font-weight: 700;
-    background: linear-gradient(135deg, var(--text), var(--accent-light));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-  }
-  .subtitle {
-    color: var(--text-muted);
-    font-size: 14px;
-    margin-bottom: 40px;
-  }
-  .brand-tag {
-    display: inline-block;
-    background: var(--accent-glow);
-    border: 1px solid rgba(59, 130, 246, 0.3);
-    border-radius: 6px;
-    padding: 2px 10px;
-    font-size: 12px;
-    color: var(--accent-light);
-    font-weight: 600;
-    letter-spacing: 0.5px;
-  }
-
-  .meta-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 12px;
-    margin-bottom: 40px;
-  }
-  .meta-item {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 14px 18px;
-    display: flex;
-    justify-content: space-between;
-  }
-  .meta-key { color: var(--text-muted); font-size: 13px; }
-  .meta-val { font-weight: 600; font-size: 13px; }
-
-  .hero-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 20px;
-    margin-bottom: 40px;
-  }
-  .hero-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    padding: 28px;
-    text-align: center;
-    position: relative;
-    overflow: hidden;
-  }
-  .hero-card::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 3px;
-    background: linear-gradient(90deg, var(--accent), var(--accent-light));
-  }
-  .hero-card.positive::before {
-    background: linear-gradient(90deg, var(--green), #4ade80);
-  }
-  .hero-card.negative::before {
-    background: linear-gradient(90deg, var(--red), #f87171);
-  }
-  .hero-label {
-    font-size: 13px;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    margin-bottom: 8px;
-  }
-  .hero-value {
-    font-size: 48px;
-    font-weight: 800;
-    line-height: 1.1;
-    margin-bottom: 6px;
-  }
-  .hero-value.positive { color: var(--green); }
-  .hero-value.negative { color: var(--red); }
-  .hero-value.neutral { color: var(--accent-light); }
-  .hero-card.neutral::before { background: linear-gradient(90deg, var(--accent), var(--accent-light)); }
-  .hero-detail {
-    font-size: 14px;
-    color: var(--text-muted);
-  }
-
-  .section { margin-bottom: 40px; }
-  .section-title {
-    font-size: 18px;
-    font-weight: 700;
-    margin-bottom: 20px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .section-title::before {
-    content: '';
-    width: 4px; height: 20px;
-    background: var(--accent);
-    border-radius: 2px;
-  }
-
-  .comparison-row {
-    display: grid;
-    grid-template-columns: 140px 1fr;
-    align-items: center;
-    gap: 16px;
-    margin-bottom: 16px;
-  }
-  .comp-label {
-    font-size: 14px;
-    color: var(--text-muted);
-    text-align: right;
-  }
-  .comp-note { font-size: 11px; color: var(--text-muted); opacity: 0.7; line-height: 1.3; }
-  .bar-group { display: flex; flex-direction: column; gap: 6px; }
-  .bar-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .bar-tag {
-    font-size: 11px;
-    font-weight: 600;
-    width: 70px;
-    text-align: right;
-    flex-shrink: 0;
-  }
-  .bar-tag.baseline { color: var(--text-muted); }
-  .bar-tag.better { color: var(--green); }
-  .bar-tag.worse { color: var(--red); }
-  .bar-track {
-    flex: 1;
-    height: 28px;
-    background: var(--surface-2);
-    border-radius: 6px;
-    overflow: hidden;
-    position: relative;
-  }
-  .bar-fill {
-    height: 100%;
-    border-radius: 6px;
-    display: flex;
-    align-items: center;
-    padding: 0 12px;
-    font-size: 13px;
-    font-weight: 600;
-    white-space: nowrap;
-    transition: width 0.6s ease;
-  }
-  .bar-fill.baseline { background: rgba(136, 136, 160, 0.25); color: var(--text-muted); }
-  .bar-fill.better { background: rgba(34, 197, 94, 0.3); color: var(--green); }
-  .bar-fill.worse { background: rgba(239, 68, 68, 0.3); color: var(--red); }
-
-  .arm-section {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    overflow: hidden;
-    margin-bottom: 20px;
-  }
-  .arm-header {
-    padding: 16px 20px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    border-bottom: 1px solid var(--border);
-  }
-  .arm-name {
-    font-weight: 700;
-    font-size: 15px;
-  }
-  .arm-meta {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 1px;
-    background: var(--border);
-  }
-  .arm-stat {
-    background: var(--surface);
-    padding: 16px;
-    text-align: center;
-  }
-  .arm-stat-val {
-    font-size: 22px;
-    font-weight: 800;
-    margin-bottom: 2px;
-  }
-  .arm-stat-label {
-    font-size: 11px;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-  .arm-tokens {
-    padding: 16px 20px;
-    border-top: 1px solid var(--border);
-    display: flex;
-    gap: 24px;
-    font-size: 13px;
-    color: var(--text-muted);
-  }
-  .arm-tokens span { color: var(--text); font-weight: 600; }
-
-  .tool-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  .tool-table th { text-align: left; padding: 10px 16px; font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
-  .tool-table td { padding: 10px 16px; border-bottom: 1px solid rgba(42, 42, 58, 0.5); }
-  .tool-table tr:last-child td { border-bottom: none; }
-  .highlight-row td { background: rgba(59, 130, 246, 0.08); font-weight: 600; }
-  .tool-table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
-
-  .unblocked-grid { display: flex; flex-direction: column; gap: 8px; }
-  .unblocked-card {
-    background: var(--surface);
-    border: 1px solid rgba(59, 130, 246, 0.3);
-    border-radius: 10px;
-    padding: 12px 16px;
-    display: flex;
-    gap: 12px;
-    align-items: baseline;
-  }
-  .unblocked-tool {
-    font-size: 13px; font-weight: 700;
-    color: var(--accent-light);
-    background: var(--accent-glow);
-    border: 1px solid rgba(59, 130, 246, 0.3);
-    border-radius: 4px;
-    padding: 2px 8px;
-    flex-shrink: 0;
-  }
-  .unblocked-query { font-size: 13px; color: var(--text-muted); }
-
-  .diff-summary {
-    display: flex;
-    gap: 16px;
-    font-size: 14px;
-    color: var(--text-muted);
-    margin-bottom: 12px;
-  }
-  .diff-added { color: var(--green); font-weight: 600; }
-  .diff-removed { color: var(--red); font-weight: 600; }
-  .diff-block {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    overflow: auto;
-    max-height: 600px;
-  }
-  .diff-block pre {
-    margin: 0;
-    padding: 16px;
-    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-    font-size: 12px;
-    line-height: 1.5;
-    tab-size: 4;
-  }
-  .diff-block code { white-space: pre; }
-  .diff-file { color: var(--accent-light); font-weight: 700; }
-  .diff-meta { color: var(--text-muted); }
-  .diff-hunk { color: var(--blue); }
-  .diff-add { color: var(--green); background: rgba(34, 197, 94, 0.08); display: inline-block; width: 100%; }
-  .diff-del { color: var(--red); background: rgba(239, 68, 68, 0.08); display: inline-block; width: 100%; }
-
-  .hero-3 { grid-template-columns: repeat(3, 1fr); }
-  .section-note { font-size: 13px; color: var(--text-muted); margin: -8px 0 16px; line-height: 1.6; }
-  .section-sub { font-size: 12px; font-weight: 500; color: var(--text-muted); margin-left: 8px; }
-  .ledger { margin-top: 12px; }
-  .ledger summary { cursor: pointer; font-size: 13px; color: var(--accent-light); padding: 6px 0; }
-  .verdict { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 12px; padding: 16px 20px; margin-bottom: 16px; font-size: 14px; line-height: 1.6; }
-  .verdict.positive { border-left-color: var(--green); }
-  .verdict.negative { border-left-color: var(--red); }
-  .verdict-head { font-weight: 700; font-size: 16px; margin-bottom: 6px; }
-  .verdict-conf { font-weight: 500; font-size: 13px; color: var(--text-muted); }
-  .met { font-weight: 700; font-size: 13px; }
-  .met-met { color: var(--green); } .met-partial { color: var(--yellow); } .met-unmet { color: var(--red); }
-  .score { font-weight: 700; }
-  .evidence { font-size: 12px; color: var(--text-muted); margin-top: 3px; line-height: 1.5; }
-  .findings { display: flex; flex-direction: column; gap: 8px; }
-  .finding { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; font-size: 13px; }
-  .finding-arm { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-right: 8px; }
-  .finding-arm.unblocked { color: var(--accent-light); } .finding-arm.baseline { color: var(--text-muted); }
-  @media (max-width: 768px) { .hero-3 { grid-template-columns: 1fr; } }
-
-  .footer {
-    text-align: center;
-    padding-top: 32px;
-    border-top: 1px solid var(--border);
-    color: var(--text-muted);
-    font-size: 13px;
-  }
-  .footer a { color: var(--accent-light); text-decoration: none; }
-
-  @media (max-width: 768px) {
-    .hero-grid { grid-template-columns: 1fr; }
-    .comparison-row { grid-template-columns: 1fr; }
-    .comp-label { text-align: left; }
-    .meta-grid { grid-template-columns: 1fr; }
-    .arm-meta { grid-template-columns: repeat(2, 1fr); }
-  }
-</style>
+<title>${escapeHtml(L.vs)}</title>
+${FONTS}
+<style>${REPORT_CSS}</style>
 </head>
 <body>
-<div class="container">
+<main class="sheet">
 
-  <div class="header">
-    <div class="logo">U</div>
-    <h1>Unblocked Compare</h1>
-  </div>
-  <div class="subtitle">
-    A/B Comparison &mdash; ${timestamp} &nbsp;
-    <span class="brand-tag">Baseline vs Unblocked</span>
-  </div>
+  ${ce ? heroHtml : `<header class="masthead">
+    <p class="product">Unblocked Compare, ${timestamp}</p>
+    <h1>${escapeHtml(L.vs)}</h1>
+    ${facts}
+  </header>
 
-  <div class="meta-grid">
-    <div class="meta-item"><span class="meta-key">Repository</span><span class="meta-val">${escapeHtml(repoName(result.repo))}</span></div>
-    <div class="meta-item"><span class="meta-key">Branch</span><span class="meta-val">${escapeHtml(result.branch)}</span></div>
-    <div class="meta-item"><span class="meta-key">Agent</span><span class="meta-val">${escapeHtml(agentLabel(result))}</span></div>
-    <div class="meta-item"><span class="meta-key">Model</span><span class="meta-val">${escapeHtml(result.model)}</span></div>
-    <div class="meta-item"><span class="meta-key">Arms cost / analysis</span><span class="meta-val">${formatCost(result.totalEstimatedCost)}${result.analysisCostUsd ? ` / ${formatCost(result.analysisCostUsd)}` : ""}</span></div>
-  </div>
+  <section class="section">
+    <h2 class="section-title">Task</h2>
+    <blockquote class="task">${escapeHtml(result.task)}</blockquote>
+  </section>`}
 
-  <div class="section">
-    <div class="section-title">Task</div>
-    <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px;">
-      <div style="font-size: 14px; line-height: 1.7;">${escapeHtml(result.task)}</div>
-    </div>
-  </div>
+  ${tldrSection}
+
+  <details class="full-report"${ce ? "" : " open"}>
+  <summary>Full report<span>Core work, housekeeping, quality, what the context did, arm details, tools and diffs</span></summary>
 
   ${hasAttr ? `
   <div class="section">
-    <div class="section-title">1 · Core task work</div>
-    <div class="section-note">Reading, deciding, coding, testing. Housekeeping removed from both arms. Time is model time; tool wait is in section 2.</div>
-    <div class="hero-grid hero-3">
+    <div class="section-title">1 · Core task work <span class="section-sub">${ce ? "the Summary's measured figures" : "the headline figures"}</span></div>
+    <div class="section-note">Reading, deciding, coding, testing, and the tool wait they caused. Housekeeping (section 2) is removed from both arms. Time is model time plus tool wait; tokens are every token the model processed: fresh input, cache writes, cache reads and output.</div>
+    ${ce ? "" : `<div class="hero-grid hero-3">
       ${heroCard("Cost", b.attribution!.core.costUsd, u.attribution!.core.costUsd, formatCost)}
-      ${hasCoreTiming ? heroCard("Model time", coreModelTimeMs(b), coreModelTimeMs(u), formatDuration) : ""}
-      ${heroCard("Output tokens", b.attribution!.core.outputTokens, u.attribution!.core.outputTokens, formatTokens)}
-    </div>
+      ${heroCard("Time", b.attribution!.core.durationMs, u.attribution!.core.durationMs, formatDuration)}
+      ${heroCard("Tokens", coreTokens(b), coreTokens(u), formatTokens)}
+    </div>`}
     ${barPair("Cost", b.attribution!.core.costUsd, u.attribution!.core.costUsd, maxCost, formatCost)}
-    ${hasCoreTiming ? barPair("Model time", coreModelTimeMs(b), coreModelTimeMs(u), maxTime, formatDuration, "thinking + generation; the headline time") : ""}
-    ${hasCoreTiming ? barPair("Tool wait", coreToolTimeMs(b), coreToolTimeMs(u), maxTime, formatDuration, "tests, CI, MCP, shell — depends on what each agent chose to run; see section 2") : ""}
-    ${barPair("Output tokens", b.attribution!.core.outputTokens, u.attribution!.core.outputTokens, Math.max(b.attribution!.core.outputTokens, u.attribution!.core.outputTokens, 1), formatTokens, "what the model wrote")}
-    ${barPair("Cache-read tokens", b.attribution!.core.cacheReadTokens, u.attribution!.core.cacheReadTokens, Math.max(b.attribution!.core.cacheReadTokens, u.attribution!.core.cacheReadTokens, 1), formatTokens, "context re-read per turn; 2% of output price")}
+    ${barPair("Time", b.attribution!.core.durationMs, u.attribution!.core.durationMs, maxTime, formatDuration, "model time + tool wait")}
+    ${hasCoreTiming ? barPair("Model time", coreModelTimeMs(b), coreModelTimeMs(u), maxTime, formatDuration, "thinking and generation") : ""}
+    ${hasCoreTiming ? barPair("Tool wait", coreToolTimeMs(b), coreToolTimeMs(u), maxTime, formatDuration, "tests, builds, research, shell: set by what each agent chose to run") : ""}
+    ${barPair("Tokens", coreTokens(b), coreTokens(u), Math.max(coreTokens(b), coreTokens(u), 1), formatTokens, "input + cache write + cache read + output")}
+    ${barPair("Cache-read tokens", b.attribution!.core.cacheReadTokens, u.attribution!.core.cacheReadTokens, Math.max(coreTokens(b), coreTokens(u), 1), formatTokens, "context re-read each message; most of the total, priced at a tenth of input")}
+    ${barPair("Output tokens", b.attribution!.core.outputTokens, u.attribution!.core.outputTokens, Math.max(b.attribution!.core.outputTokens, u.attribution!.core.outputTokens, 1), formatTokens, "what the model wrote; the most expensive tokens")}
     ${barPair("Messages", b.attribution!.core.turns, u.attribution!.core.turns, Math.max(b.attribution!.core.turns, u.attribution!.core.turns, 1), String)}
     ${result.economics ? economicsBlock(result) : ""}
   </div>
 
   <div class="section">
-    <div class="section-title">2 · Housekeeping and tool wait <span class="section-sub">excluded from the headline</span></div>
-    <div class="section-note">Tool wait: time spent in tests, CI and shell commands, set by what each agent chose to run. Housekeeping: lockfile reverts, artifact cleanup, status checks, branching, committing, redundant reruns. Model habit, not context.</div>
+    <div class="section-title">2 · Housekeeping <span class="section-sub">excluded from every figure above</span></div>
+    <div class="section-note">Housekeeping: lockfile reverts, artifact cleanup, status checks, branching, committing, redundant reruns. Model habit, not context, so it counts in neither arm. Tool wait during core work is part of the core time; it is shown here for reference. Raw total is the whole run, housekeeping included.</div>
     <div class="tool-table-wrap">
       <table class="tool-table">
         <thead><tr><th>Arm</th><th>Housekeeping msgs</th><th>Cost</th><th>Time</th><th>What it was</th><th>Tool wait in core work</th><th>Raw total</th></tr></thead>
         <tbody>
           <tr><td>Baseline</td><td>${b.attribution!.housekeeping.turns}</td><td>${formatCost(b.attribution!.housekeeping.costUsd)}</td><td>${formatDuration(b.attribution!.housekeeping.durationMs)}</td><td>${escapeHtml(housekeepingKinds(b)) || "–"}</td><td>${formatDuration(coreToolTimeMs(b))}</td><td>${formatCost(b.estimatedCost)} · ${formatDuration(b.run.durationMs)}</td></tr>
-          <tr><td>With Unblocked</td><td>${u.attribution!.housekeeping.turns}</td><td>${formatCost(u.attribution!.housekeeping.costUsd)}</td><td>${formatDuration(u.attribution!.housekeeping.durationMs)}</td><td>${escapeHtml(housekeepingKinds(u)) || "–"}</td><td>${formatDuration(coreToolTimeMs(u))}</td><td>${formatCost(u.estimatedCost)} · ${formatDuration(u.run.durationMs)}</td></tr>
+          <tr><td>${L.arm}</td><td>${u.attribution!.housekeeping.turns}</td><td>${formatCost(u.attribution!.housekeeping.costUsd)}</td><td>${formatDuration(u.attribution!.housekeeping.durationMs)}</td><td>${escapeHtml(housekeepingKinds(u)) || "–"}</td><td>${formatDuration(coreToolTimeMs(u))}</td><td>${formatCost(u.estimatedCost)} · ${formatDuration(u.run.durationMs)}</td></tr>
         </tbody>
       </table>
     </div>
     ${stallNote(b, u)}
     <details class="ledger"><summary>Excluded turns, with reasons</summary>
       ${housekeepingLedger("Baseline", b)}
-      ${housekeepingLedger("With Unblocked", u)}
+      ${housekeepingLedger(L.arm, u)}
     </details>
   </div>` : `
   <div class="hero-grid">
@@ -975,7 +796,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
     <div class="section-title">Requirement check and fix rounds <span class="section-sub">checker ${escapeHtml((b.review ?? u.review)!.passes[0]?.reviewModel ?? "")}, up to ${(b.review ?? u.review)!.maxRounds} round(s)</span></div>
     <div class="section-note">One requirement list for the run, extracted from the task before either arm started. After each pass a checker marks every requirement met, partial or unmet with the reason; it adds nothing and suggests nothing. The agent resumes its session to meet the open ones, and may dispute one; a dispute is decided once, blind to the arm, and a waiver applies to both. Rounds stop when every requirement is met or waived. Numbers elsewhere on this page include every fix pass.</div>
     ${sharedRequirementsTable(result)}
-    ${[["Baseline", b], ["With Unblocked", u]].map(([label, arm]) => {
+    ${[["Baseline", b], [L.arm, u]].map(([label, arm]) => {
       const rv = (arm as ArmResult).review;
       if (!rv) return "";
       const last = rv.passes[rv.passes.length - 1];
@@ -988,7 +809,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
         ${rv.passes.map(p => `
         <div class="arm-tokens" style="display:block;"><b>Round ${p.round}</b> · ${p.mergeable ? "all met" : "open"} · ${escapeHtml(p.summary)}${p.fix ? ` · fix: ${formatCost(p.fix.costUsd)}, ${formatDuration(p.fix.durationMs)}, ${p.fix.messages} msgs${p.fix.disputed ? ` · <span class="met met-partial">disputed</span> ${escapeHtml(p.fix.disputed.slice(0, 200))}` : ""}` : ""}
           ${p.comments?.length ? `<table class="tool-table" style="margin-top: 6px;"><tbody>${p.comments.map(c => `
-            <tr><td style="width: 90px;"><span class="met ${c.severity === "must-fix" ? "met-unmet" : c.severity === "should-fix" ? "met-partial" : ""}">${c.severity}</span></td><td style="font-family: 'SF Mono', 'Fira Code', Consolas, monospace; font-size: 12px; width: 220px;">${escapeHtml(c.file.split("/").slice(-2).join("/"))}</td><td style="font-size: 13px;">${escapeHtml(c.comment)}</td></tr>`).join("")}</tbody></table>` : ""}
+            <tr><td style="width: 90px;"><span class="met ${c.severity === "must-fix" ? "met-unmet" : c.severity === "should-fix" ? "met-partial" : ""}">${c.severity}</span></td><td style="font-family: var(--mono); font-size: 12px; width: 220px;">${escapeHtml(c.file.split("/").slice(-2).join("/"))}</td><td style="font-size: 13px;">${escapeHtml(c.comment)}</td></tr>`).join("")}</tbody></table>` : ""}
         </div>`).join("")}
       </div>`;
     }).join("")}
@@ -997,15 +818,15 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   ${result.quality ? `
   <div class="section">
     <div class="section-title">3 · Quality analysis <span class="section-sub">blinded judge: ${escapeHtml(result.quality.judgeModel)}</span></div>
-    <div class="section-note">Blinded judge: saw task, final responses, tests run, diffs and the checker's final record as A/B in random order. Grades the same requirement list as the checker. Its verdict is decided by requirements met, then by defects the change introduces within that scope, then by material hygiene; other work beyond the task does not count. A blinded tie goes to Unblocked only when the Unblocked agent's candidate discovery materially improved the outcome or invalidated a requirement, and the un-blinded impact pass finds the research context led to it. Discoveries the agent made on its own, on either side, measure model variance and never break a tie.</div>
+    <div class="section-note">Blinded judge: saw task, final responses, tests run, diffs and the checker's final record as A/B in random order. Grades the same requirement list as the checker, after the revision pass: a requirement is restated to the team's intent only when one agent's tool results quote the decision, and both agents are graded against the restatement. Its verdict is decided by requirements met, then by defects the change introduces within that scope, then by material hygiene; other work beyond the task does not count. A blinded tie goes to ${L.short} only when the ${L.short} agent's candidate discovery materially improved the outcome or invalidated a requirement, and the un-blinded impact pass finds the research context led to it. Discoveries the agent made on its own, on either side, measure model variance and never break a tie.</div>
     <div class="verdict ${result.quality.verdict.better === "unblocked" ? "positive" : result.quality.verdict.better === "baseline" ? "negative" : ""}">
-      <div class="verdict-head">Verdict: ${result.quality.verdict.better === "tie" ? "tie" : result.quality.verdict.better === "unblocked" ? "With Unblocked" : "Baseline"}${result.quality.verdict.tieBreaker?.applied ? ` <span class="verdict-conf">· blinded verdict was a tie; decided by the context-led discovery tie-breaker</span>` : result.impact ? ` <span class="verdict-conf">· driver: ${result.impact.impact.outcomeDriver === "context" ? "the Unblocked context" : result.impact.impact.outcomeDriver === "agent" ? "agent behaviour, not context" : "context and agent behaviour"}</span>` : ""}</div>
+      <div class="verdict-head">Verdict: ${result.quality.verdict.better === "tie" ? "tie" : result.quality.verdict.better === "unblocked" ? L.arm : "Baseline"}${result.quality.verdict.tieBreaker?.applied ? ` <span class="verdict-conf">· blinded verdict was a tie; decided by the context-led discovery tie-breaker</span>` : result.impact ? ` <span class="verdict-conf">· driver: ${result.impact.impact.outcomeDriver === "context" ? "the Unblocked context" : result.impact.impact.outcomeDriver === "agent" ? "agent behaviour, not context" : "context and agent behaviour"}</span>` : ""}</div>
       <div>${escapeHtml(result.quality.verdict.rationale)}</div>
       ${result.quality.verdict.tieBreaker ? `<div class="evidence" style="margin-top: 6px;">Tie-breaker: ${result.quality.verdict.tieBreaker.applied ? "applied" : "not applied"} · ${escapeHtml(result.quality.verdict.tieBreaker.reason)}</div>` : ""}
     </div>
     ${result.quality.discoveries ? `<div class="findings" style="margin-bottom: 16px;">${(["baseline", "unblocked"] as const).map(a => {
       const d = result.quality!.discoveries![a];
-      const label = a === "baseline" ? "Baseline" : "With Unblocked";
+      const label = a === "baseline" ? "Baseline" : L.arm;
       if (d.kind === "none") return `<div class="finding"><b>${label}</b> · candidate discovery: none</div>`;
       const attr = a === "unblocked" ? result.impact?.discoveryAttribution : undefined;
       const tag = a === "baseline" ? `<span class="met met-partial">agent-found; baseline has no context, so it cannot break a tie</span>`
@@ -1014,10 +835,10 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
     }).join("")}</div>` : ""}
     <div class="tool-table-wrap" style="margin-bottom: 16px;">
       <table class="tool-table">
-        <thead><tr><th>Requirement from the task</th><th>Baseline</th><th>With Unblocked</th></tr></thead>
+        <thead><tr><th>Requirement from the task</th><th>Baseline</th><th>${L.arm}</th></tr></thead>
         <tbody>${result.quality.requirements.map(rq => `
           <tr>
-            <td>${escapeHtml(rq.requirement)}</td>
+            <td>${escapeHtml(rq.requirement)}${revisionNote(result, rq)}</td>
             <td><span class="met met-${rq.baseline.status}">${MET_ICON[rq.baseline.status]} ${rq.baseline.status}</span><div class="evidence">${escapeHtml(rq.baseline.evidence)}</div></td>
             <td><span class="met met-${rq.unblocked.status}">${MET_ICON[rq.unblocked.status]} ${rq.unblocked.status}</span><div class="evidence">${escapeHtml(rq.unblocked.evidence)}</div></td>
           </tr>`).join("")}
@@ -1026,7 +847,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
     </div>
     <div class="tool-table-wrap" style="margin-bottom: 16px;">
       <table class="tool-table">
-        <thead><tr><th>Criterion</th><th>Baseline</th><th>With Unblocked</th></tr></thead>
+        <thead><tr><th>Criterion</th><th>Baseline</th><th>${L.arm}</th></tr></thead>
         <tbody>${result.quality.criteria.map(c => `
           <tr>
             <td>${escapeHtml(c.criterion)}</td>
@@ -1037,12 +858,12 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
       </table>
     </div>
     ${result.quality.findings.length ? `<div class="findings">${result.quality.findings.map(f => `
-      <div class="finding"><span class="finding-arm ${f.arm}">${f.arm === "unblocked" ? "With Unblocked" : "Baseline"}</span> ${escapeHtml(f.finding)}<div class="evidence">${escapeHtml(f.evidence)}</div></div>`).join("")}</div>` : ""}
+      <div class="finding"><span class="finding-arm ${f.arm}">${f.arm === "unblocked" ? L.arm : "Baseline"}</span> ${escapeHtml(f.finding)}<div class="evidence">${escapeHtml(f.evidence)}</div></div>`).join("")}</div>` : ""}
   </div>` : ""}
 
   ${result.impact ? `
   <div class="section">
-    <div class="section-title">4 · What the Unblocked context did <span class="section-sub">un-blinded: ${escapeHtml(result.impact.model)}</span></div>
+    <div class="section-title">4 · ${L.impactTitle} <span class="section-sub">un-blinded: ${escapeHtml(result.impact.model)}</span></div>
     <div class="section-note">Which research results the agent used, and whether the outcome traces to the context or to the agent.</div>
     <div class="verdict ${result.impact.impact.contextEffect === "helped" ? "positive" : result.impact.impact.contextEffect === "hurt" ? "negative" : ""}">
       <div class="verdict-head">Outcome: ${result.impact.impact.outcome} <span class="verdict-conf">· context ${result.impact.impact.contextEffect} · driven by ${result.impact.impact.outcomeDriver}</span></div>
@@ -1069,7 +890,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
     <div class="section-title">Arm Details</div>
 
     ${armCard("Baseline", b, false)}
-    ${armCard("With Unblocked", u, true)}
+    ${armCard(L.arm, u, true)}
   </div>
 
   ${modelBreakdownRows ? `
@@ -1097,11 +918,11 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
     <div class="section-title">Tool Usage Breakdown</div>
     <div class="tool-table-wrap">
       <table class="tool-table">
-        <thead><tr><th>Tool</th><th>Baseline</th><th>Unblocked</th><th>Delta</th>${hasToolTiming ? `<th>Baseline time</th><th>Unblocked time</th>` : ""}</tr></thead>
+        <thead><tr><th>Tool</th><th>Baseline</th><th>${L.short}</th><th>Delta</th>${hasToolTiming ? `<th>Baseline time</th><th>${L.short} time</th>` : ""}</tr></thead>
         <tbody>${toolCompareRows}</tbody>
       </table>
     </div>
-    ${[["Baseline", b], ["Unblocked", u]].filter(([, a]) => shellOnlyEdits(a as ArmResult)).map(([n, a]) => `
+    ${[["Baseline", b], [L.short, u]].filter(([, a]) => shellOnlyEdits(a as ArmResult)).map(([n, a]) => `
     <div style="font-size: 12px; color: var(--text-muted); margin-top: 8px;">
       ${n} changed ${(a as ArmResult).diffStats.filesChanged} file${(a as ArmResult).diffStats.filesChanged === 1 ? "" : "s"} without any Edit/Write call — see "Bash (writes files)" for the shell commands that did it. The diff below is the ground truth.
     </div>`).join("")}
@@ -1119,7 +940,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
       </div>
       <div class="tool-table-wrap">
         <table class="tool-table">
-          <thead><tr><th colspan="2">With Unblocked</th></tr></thead>
+          <thead><tr><th colspan="2">${L.arm}</th></tr></thead>
           <tbody>${slowestRows(u)}</tbody>
         </table>
       </div>
@@ -1128,7 +949,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
 
   ${u.unblockedCalls.length > 0 ? `
   <div class="section">
-    <div class="section-title">Unblocked Context Queries</div>
+    <div class="section-title">${L.queries}</div>
     <div class="unblocked-grid">
       ${u.unblockedCalls.map(c => `
         <div class="unblocked-card">
@@ -1138,6 +959,8 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
       `).join("")}
     </div>
   </div>` : ""}
+
+  ${engineSection(u)}
 
   <div class="section">
     <div class="section-title">Code Changes &mdash; Baseline</div>
@@ -1152,7 +975,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   </div>
 
   <div class="section">
-    <div class="section-title">Code Changes &mdash; With Unblocked</div>
+    <div class="section-title">Code Changes &mdash; ${L.arm}</div>
     <div class="diff-summary">
       <span>${u.diffStats.filesChanged} files</span>
       <span class="diff-added">+${u.diffStats.linesAdded}</span>
@@ -1162,13 +985,12 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
     </div>
     <div class="diff-block"><pre><code>${formatDiff(u.diff)}</code></pre></div>
   </div>
+  </details>
 
-  <div class="footer">
-    Generated by Unblocked Compare &mdash;
-    <a href="https://getunblocked.com">Unblocked</a>
-  </div>
+  <footer class="footer">Generated by Unblocked Compare. <a href="https://getunblocked.com">getunblocked.com</a></footer>
 
-</div>
+</main>
+${COUNT_UP}
 </body>
 </html>`;
 
@@ -1177,12 +999,82 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   return htmlPath;
 }
 
+// Console TL;DR: headline, the three numbers raw and with confounders removed.
+function tldrLines(result: ComparisonResult): string[] {
+  const ce = result.contextEffect;
+  if (!ce) return [];
+  const pct = (a: number, b: number) => (a ? `${b >= a ? "+" : ""}${Math.round(((b - a) / a) * 100)}%` : "n/a");
+  const sg = (n: number, fmt: (n: number) => string) => `${n < 0 ? "-" : "+"}${fmt(Math.abs(n))}`;
+  const row = (name: string, raw: [number, number], adj: [number, number], fmt: (n: number) => string) => {
+    const r = reconcile(ce, name === "Cost" ? "costUsd" : name === "Time" ? "durationMs" : "tokens");
+    return `  ${padRight(name, 8)}context's influence ${padLeft(pct(adj[0], adj[1]), 5)}  measured ${padLeft(pct(raw[0], raw[1]), 5)} = ${sg(r.influence, fmt)} influence ${sg(r.ownMistakes, fmt)} own mistakes ${sg(r.other, fmt)} other`;
+  };
+  return [
+    "",
+    ...wrap("SUMMARY" + (ce.tldr ? `: ${ce.tldr.headline}` : ""), W - 8).map(l => `  ${l}`),
+    row("Cost", [ce.baseline.costUsd, ce.unblocked.costUsd], [ce.adjustedBaseline.costUsd, ce.adjustedUnblocked.costUsd], formatCost),
+    row("Time", [ce.baseline.durationMs, ce.unblocked.durationMs], [ce.adjustedBaseline.durationMs, ce.adjustedUnblocked.durationMs], formatDuration),
+    row("Tokens", [ce.baseline.tokens, ce.unblocked.tokens], [ce.adjustedBaseline.tokens, ce.adjustedUnblocked.tokens], formatTokens),
+    ...(ce.tldr?.bullets ?? []).flatMap(b => wrap(b, W - 10).map((l, i) => `   ${i ? " " : "•"} ${l}`)),
+    "",
+  ];
+}
+
+// The simulated context engine's research calls: what each cost and took.
+// Its spend stands in for the real service's, so it is not in the arm's cost.
+function engineSection(arm: ArmResult): string {
+  const e = arm.contextEngine;
+  if (!e) return "";
+  const modified = e.calls.some(c => c.repoModified);
+  const rows = e.calls.map(c => `
+        <tr>
+          <td>${c.seq}</td>
+          <td>${escapeHtml(c.command)}${c.effort ? ` <span style="color: var(--text-muted);">(${escapeHtml(c.effort)})</span>` : ""}</td>
+          <td style="font-size: 13px;">${escapeHtml((c.query ?? (c.urls ?? []).join(" ")).slice(0, 220))}</td>
+          <td>${formatDuration(c.durationMs)}</td>
+          <td>${formatCost(c.costUsd)}</td>
+          <td>${c.toolCalls}</td>
+          <td>${c.error ? `<span style="color: var(--red);">${escapeHtml(c.error)}</span>` : c.repoModified ? `<span style="color: var(--yellow);">modified repo</span>` : `<span style="color: var(--green);">ok</span>`}</td>
+        </tr>`).join("");
+  return `
+  <div class="section">
+    <div class="section-title">Simulated context engine <span class="section-sub">${e.calls.length} call(s) · ${formatDuration(e.durationMs)} · ${formatCost(e.costUsd)}</span></div>
+    <div class="section-note">The ${L.short} arm's <code>unblocked</code> CLI was a local research agent (the same agent CLI, with its MCP servers and read-only) answering each query in the original repository. Its cost stands in for the context engine's and is not included in the arm's cost. A simulated research pass takes far longer than the real service, so each call counts as at most ${formatDuration(e.capMs ?? 20_000)} in the arm's timings${e.discountedMs ? `: ${formatDuration(e.discountedMs)} removed` : ""}; the time column below is the actual. Transcripts: <code>unblocked/engine/research-*.jsonl</code>.${modified ? ` <span style="color: var(--yellow);">A research call changed files in the repository; check <code>git status</code> there.</span>` : ""}</div>
+    ${e.calls.length ? `<div class="tool-table-wrap">
+      <table class="tool-table">
+        <thead><tr><th>#</th><th>Command</th><th>Query</th><th>Time</th><th>Cost</th><th>Tools</th><th>Status</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>` : `<div class="section-note">The agent made no research calls.</div>`}
+  </div>`;
+}
+
+// A requirement the revision pass restated: the task's wording, who found the
+// team's intent, and the quote from that arm's tool results that shows it.
+function revisionNote(result: ComparisonResult, rq: { index?: number; revisedFrom?: string }): string {
+  const rev = rq.index !== undefined ? result.reviewSpec?.revisions?.find(r => r.index === rq.index) : undefined;
+  if (!rev || !rq.revisedFrom) return "";
+  const by = rev.foundBy === "unblocked" ? L.arm : "Baseline";
+  return `<div class="evidence"><b>Revised</b> from the task's wording "${escapeHtml(rq.revisedFrom)}" — ${escapeHtml(rev.reason)} Found by ${escapeHtml(by)}: <i>"${escapeHtml(rev.quote)}"</i></div>`;
+}
+
+// Arm and section names: a simulation's treatment arm is the simulated
+// context, not Unblocked. Set at the start of each report writer.
+interface Labels { short: string; arm: string; baseline: string; vs: string; impactTitle: string; queries: string }
+function labelsFor(r?: { contextEngine?: string }): Labels {
+  const sim = r?.contextEngine === "simulated";
+  const short = sim ? "Simulated Context" : "Unblocked";
+  return { short, arm: `With ${short}`, baseline: sim ? "Baseline" : "Baseline (no Unblocked)", vs: `Baseline vs ${short}`, impactTitle: sim ? "What the simulated context did" : "What the Unblocked context did", queries: sim ? "Simulated Context Queries" : "Unblocked Context Queries" };
+}
+let L: Labels = labelsFor();
+
 // Results from before the agent was recorded were all Claude Code runs.
 function agentLabel(result: { agent?: AgentName }): string {
   return AGENTS[result.agent ?? "claude"].label;
 }
 
 export function writeBatchSummary(config: { agent: AgentName; task: string; repo: string; branch: string; model: string; repeat: number }, results: ComparisonResult[], batchDir: string): string {
+  L = labelsFor(results[0]);
   const median = (xs: number[]) => { if (!xs.length) return 0; const a = [...xs].sort((x, y) => x - y); return a.length % 2 ? a[(a.length - 1) / 2] : (a[a.length / 2 - 1] + a[a.length / 2]) / 2; };
   const core = (r: ComparisonResult, arm: "baseline" | "unblocked") => r[arm].attribution?.core ?? { costUsd: r[arm].estimatedCost, durationMs: r[arm].run.durationMs, turns: r[arm].run.assistantTurns };
   const counts = { unblocked: 0, baseline: 0, tie: 0, none: 0 };
@@ -1195,34 +1087,42 @@ export function writeBatchSummary(config: { agent: AgentName; task: string; repo
     const b = core(r, "baseline"), u = core(r, "unblocked");
     const dir = path.join(batchDir, `run-${i + 1}`);
     const v = r.quality?.verdict;
-    return `<tr><td><a href="run-${i + 1}/report.html">run ${i + 1}</a></td><td>${v ? (v.better === "unblocked" ? "With Unblocked" : v.better === "baseline" ? "Baseline" : "tie") : "–"}${v?.tieBreaker?.applied ? " <span class=\"met met-met\">tie-breaker</span>" : ""}</td><td>${r.impact ? escapeHtml(r.impact.impact.outcomeDriver) : "–"}</td><td>${formatCost(b.costUsd)} → ${formatCost(u.costUsd)} (${pct(b.costUsd, u.costUsd)})</td><td>${formatDuration(b.durationMs)} → ${formatDuration(u.durationMs)} (${pct(b.durationMs, u.durationMs)})</td><td>${b.turns} → ${u.turns}</td><td style="font-size: 12px;">${escapeHtml(v?.rationale ?? "")}</td></tr>`;
+    return `<tr><td><a href="run-${i + 1}/report.html">run ${i + 1}</a></td><td>${v ? (v.better === "unblocked" ? L.arm : v.better === "baseline" ? "Baseline" : "tie") : "–"}${v?.tieBreaker?.applied ? " <span class=\"met met-met\">tie-breaker</span>" : ""}</td><td>${r.impact ? escapeHtml(r.impact.impact.outcomeDriver) : "–"}</td><td>${formatCost(b.costUsd)} to ${formatCost(u.costUsd)} (${pct(b.costUsd, u.costUsd)})</td><td>${formatDuration(b.durationMs)} to ${formatDuration(u.durationMs)} (${pct(b.durationMs, u.durationMs)})</td><td>${b.turns} to ${u.turns}</td><td class="evidence">${escapeHtml(v?.rationale ?? "")}</td></tr>`;
   });
   const bC = med("baseline", c => c.costUsd), uC = med("unblocked", c => c.costUsd), bT = med("baseline", c => c.durationMs), uT = med("unblocked", c => c.durationMs);
-  const html = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Unblocked Compare — Batch Summary</title>
-<style>
-  :root { --bg: #0a0a0f; --surface: #12121a; --border: #2a2a3a; --text: #e4e4ed; --text-muted: #8888a0; --accent: #3b82f6; --green: #22c55e; --red: #ef4444; --yellow: #eab308; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; padding: 32px 16px; }
-  .container { max-width: 1100px; margin: 0 auto; }
-  h1 { font-size: 24px; margin-bottom: 4px; } .sub { color: var(--text-muted); margin-bottom: 24px; font-size: 14px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 28px; }
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
-  .card .k { color: var(--text-muted); font-size: 12px; text-transform: uppercase; letter-spacing: 1px; } .card .v { font-size: 26px; font-weight: 700; } .card .d { color: var(--text-muted); font-size: 13px; }
-  .pos { color: var(--green); } .neg { color: var(--red); }
-  table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
-  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: top; } th { color: var(--text-muted); font-weight: 600; }
-  a { color: #93c5fd; } .met { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; } .met-met { background: rgba(34,197,94,0.15); color: var(--green); }
-  .note { color: var(--text-muted); font-size: 13px; margin-top: 16px; }
-</style></head><body><div class="container">
-  <h1>Batch summary · ${results.length} of ${config.repeat} repeat(s)</h1>
-  <div class="sub">${escapeHtml(repoName(config.repo))} @ ${escapeHtml(config.branch)} · ${escapeHtml(agentLabel(config))} · ${escapeHtml(config.model)} · ${escapeHtml(config.task.slice(0, 160))}${config.task.length > 160 ? "…" : ""}</div>
-  <div class="grid">
-    <div class="card"><div class="k">Verdicts</div><div class="v">${counts.unblocked}–${counts.tie}–${counts.baseline}</div><div class="d">Unblocked – tie – baseline${counts.none ? ` · ${counts.none} without a verdict` : ""}</div></div>
-    <div class="card"><div class="k">Median core cost</div><div class="v ${uC <= bC ? "pos" : "neg"}">${pct(bC, uC)}</div><div class="d">${formatCost(bC)} → ${formatCost(uC)}</div></div>
-    <div class="card"><div class="k">Median core time</div><div class="v ${uT <= bT ? "pos" : "neg"}">${pct(bT, uT)}</div><div class="d">${formatDuration(bT)} → ${formatDuration(uT)}</div></div>
-  </div>
-  <table><thead><tr><th>Run</th><th>Verdict</th><th>Driver</th><th>Core cost (B → U)</th><th>Core time (B → U)</th><th>Messages</th><th>Rationale</th></tr></thead><tbody>${rows.join("")}</tbody></table>
-  <div class="note">Each run is an independent comparison (fresh worktrees, its own requirement check, judge and impact pass). Medians are over core work with housekeeping removed, across the ${judged.length} of ${results.length} run(s) that reached a verdict${judged.length < results.length ? " (a killed or timed-out run's partial spend is not comparable and is excluded)" : ""}. Verdicts follow the same rubric as the per-run reports.</div>
-</div></body></html>`;
+  const html = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(L.vs)}: ${results.length} runs</title>
+${FONTS}
+<style>${REPORT_CSS}${BATCH_CSS}</style></head><body><main class="sheet">
+  <header class="masthead">
+    <p class="product">Unblocked Compare, batch of ${results.length}${results.length < config.repeat ? ` (of ${config.repeat} planned)` : ""}</p>
+    <h1>${escapeHtml(L.vs)}</h1>
+    <dl class="facts">
+      <div><dt>Repository</dt><dd>${escapeHtml(repoName(config.repo))}</dd></div>
+      <div><dt>Branch</dt><dd>${escapeHtml(config.branch)}</dd></div>
+      <div><dt>Agent</dt><dd>${escapeHtml(agentLabel(config))}</dd></div>
+      <div><dt>Model</dt><dd>${escapeHtml(config.model)}</dd></div>
+    </dl>
+  </header>
+  <section class="section">
+    <h2 class="section-title">Task</h2>
+    <blockquote class="task">${escapeHtml(config.task.slice(0, 600))}${config.task.length > 600 ? "…" : ""}</blockquote>
+  </section>
+  <section class="section">
+    <h2 class="section-title">Across runs</h2>
+    <table class="results">
+      <tbody>
+        <tr><th scope="row">Verdicts</th><td><span class="fig">${counts.unblocked} / ${counts.tie} / ${counts.baseline}</span><span class="range">${escapeHtml(L.short)} better / tie / Baseline better${counts.none ? `; ${counts.none} without a verdict` : ""}</span></td></tr>
+        <tr><th scope="row">Median core cost</th><td><span class="fig ${uC <= bC ? "better" : "worse"}">${pct(bC, uC).replace(/^-/, "&minus;")}</span><span class="range">${formatCost(bC)} to ${formatCost(uC)}</span></td></tr>
+        <tr><th scope="row">Median core time</th><td><span class="fig ${uT <= bT ? "better" : "worse"}">${pct(bT, uT).replace(/^-/, "&minus;")}</span><span class="range">${formatDuration(bT)} to ${formatDuration(uT)}</span></td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section class="section">
+    <h2 class="section-title">Runs</h2>
+    <div class="tool-table-wrap"><table class="tool-table"><thead><tr><th>Run</th><th>Verdict</th><th>Driver</th><th>Core cost</th><th>Core time</th><th>Messages</th><th>Rationale</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>
+    <p class="section-note">Each run is an independent comparison (fresh clones, its own requirement check, judge and impact pass). Costs and times read Baseline to ${escapeHtml(L.short)}. Medians are over core work with housekeeping removed, across the ${judged.length} of ${results.length} run(s) that reached a verdict${judged.length < results.length ? " (a killed or timed-out run's partial spend is not comparable and is excluded)" : ""}. Verdicts follow the same rubric as the per-run reports.</p>
+  </section>
+</main></body></html>`;
   const out = path.join(batchDir, "summary.html");
   fs.writeFileSync(out, html);
   fs.writeFileSync(path.join(batchDir, "summary.json"), JSON.stringify({ config, verdicts: counts, medians: { baseline: { costUsd: bC, durationMs: bT }, unblocked: { costUsd: uC, durationMs: uT } }, runs: results.map((r, i) => ({ dir: `run-${i + 1}`, verdict: r.quality?.verdict, driver: r.impact?.impact.outcomeDriver, baseline: core(r, "baseline"), unblocked: core(r, "unblocked") })) }, null, 2));

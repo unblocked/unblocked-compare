@@ -3,8 +3,8 @@ import { log } from "./util.ts";
 
 const DEFAULT_MAX_BUFFER = 8 * 1024 * 1024;
 
-export function git(cwd: string, args: string[], maxBuffer = DEFAULT_MAX_BUFFER): string {
-  return execFileSync("git", ["-c", "core.quotePath=false", ...args], { cwd, stdio: "pipe", maxBuffer }).toString();
+export function git(cwd: string, args: string[], maxBuffer = DEFAULT_MAX_BUFFER, input?: string): string {
+  return execFileSync("git", ["-c", "core.quotePath=false", ...args], { cwd, stdio: "pipe", maxBuffer, ...(input !== undefined ? { input } : {}) }).toString();
 }
 
 export function tryGit(cwd: string, args: string[], what: string): string | null {

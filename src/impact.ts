@@ -3,13 +3,14 @@ import type { ArmResult, ComparisonResult, ContextImpact } from "./types.ts";
 import { formatCost, log } from "./util.ts";
 import { runStructured } from "./analyst.ts";
 import { describeEconomics } from "./economics.ts";
+import { unblockedCommand } from "./unblocked-cli.ts";
 
 interface ResearchCall { turn: number; tool: string; query: string; items: { title: string; chars: number; preview: string }[]; chars: number }
 
-const isResearch = (name: string, input: Record<string, unknown>) =>
-  name.toLowerCase().includes("unblocked") || (name === "Bash" && /^unblocked\s+context/.test(String(input.command ?? "")));
+export const isResearch = (name: string, input: Record<string, unknown>) =>
+  name.toLowerCase().includes("unblocked") || (name === "Bash" && !!unblockedCommand(String(input.command ?? "")));
 
-const isExternal = (name: string, input: Record<string, unknown>) =>
+export const isExternal = (name: string, input: Record<string, unknown>) =>
   /^(WebFetch|WebSearch)$/.test(name) || (name === "Bash" && /\b(gh (api|search|pr|repo)|curl |wget |rails runner|psql |mysql )/.test(String(input.command ?? "")));
 
 function excerpt(s: string, n: number): string { s = s.replace(/\s+/g, " ").trim(); return s.length > n ? s.slice(0, n) + "…" : s; }
@@ -90,8 +91,14 @@ const SCHEMA = {
     discoveryAttribution: { type: "object", properties: {
       contextLed: { type: "boolean" }, evidence: { type: "string" },
     }, required: ["contextLed", "evidence"] },
+    episodes: { type: "array", items: { type: "object", properties: {
+      arm: { type: "string", enum: ["baseline", "unblocked"] },
+      fromTurn: { type: "integer" }, toTurn: { type: "integer" },
+      cause: { type: "string", enum: ["context", "agent", "environment"] },
+      what: { type: "string" },
+    }, required: ["arm", "fromTurn", "toTurn", "cause", "what"] } },
   },
-  required: ["research", "impact", "loss", "economics", "discoveryAttribution"],
+  required: ["research", "impact", "loss", "economics", "discoveryAttribution", "episodes"],
 };
 
 function prompt(result: ComparisonResult): string {
@@ -105,7 +112,7 @@ ${rc.items.map((it, i) => `  [${i + 1}] ${it.title} (${it.chars} chars)\n      $
 Requirements: ${q.requirements.map(r => `"${r.requirement}" baseline=${r.baseline.status}, unblocked=${r.unblocked.status}`).join("; ")}
 Findings: ${q.findings.map(f => `(${f.arm}) ${f.finding}`).join(" | ")}` : "(no quality verdict available)";
 
-  return `Two autonomous coding agents did the same task in identical copies of one repository. The UNBLOCKED agent had a research tool (Unblocked) that searches the organisation's PRs, docs, chat, issues and other repositories; the BASELINE agent did not, but could use anything else, including the enterprise GitHub API. A blinded judge has already compared their outputs. Your job is un-blinded and narrow: what did the research context actually do?
+  return `Two autonomous coding agents did the same task in identical copies of one repository. The UNBLOCKED agent had a research tool (${result.contextEngine === "simulated" ? "a context engine" : "Unblocked"}) that searches the organisation's PRs, docs, chat, issues and other repositories; the BASELINE agent did not, but could use anything else, including the enterprise GitHub API. A blinded judge has already compared their outputs. Your job is un-blinded and narrow: what did the research context actually do?
 
 Answer with evidence from the material below. Keep every string short; this goes on a one-page report.
 1. research: for each research call — items returned, which items the UNBLOCKED agent actually used (cited, acted on in code, or followed up) and for what (each "use" ≤ 12 words), and its value: decisive, useful, unused, or misleading (led to a wrong conclusion, including a confident "nothing found"). note ≤ 15 words.
@@ -118,6 +125,11 @@ Answer with evidence from the material below. Keep every string short; this goes
 3. loss: only meaningful when outcome is "worse" (otherwise fill n/a and empty strings). Name what the BASELINE found that the UNBLOCKED agent never had, if anything. Say whether the baseline found it by a systematic search a careful engineer would do (e.g. a code search on the org's GitHub for the exact pattern) or by chance. Then pick the UNBLOCKED failure mode: the context misled it (returned something wrong, or a confident "nothing found" the agent repeated); the context made it stop searching early (it had a lead in hand, or an obvious next step, and treated the research as the answer); the context did not include it and the agent never looked elsewhere; or the loss is unrelated to context. explanation ≤ 2 sentences.
 4. economics: three explanations, ≤ 2 sentences each, of why the arms differ in cost, time and tokens. Name only the one or two terms that moved each delta, with their size from the ECONOMICS BREAKDOWN, and what in the transcripts caused them. Say what the cost bought when it bought something. Same standard for both arms.
 5. discoveryAttribution: the blinded judge recorded the UNBLOCKED agent's candidate decisive discovery (below, or "none"). Decide whether the research context led to it: contextLed is true only when a research call's returned items contained the fact, or pointed at the file, thread or PR that contained it, and the agent acted on it after that call (cite the turn and the item). If the agent found the fact by its own reading, grep, git history or reasoning, or there is no candidate, contextLed is false. evidence ≤ 25 words. This decides a tie-breaker, so be strict: a research result that merely mentioned the area is not leading the agent to the fact.
+6. episodes: the stretches of work, by turn range in each arm's walk, that make the two arms' cost and time differ. List only what one arm did and the other did not (or did much more of): a test-fix loop, an extra build, over-scoped work, research calls, exploration one arm needed and the other skipped, a flaky rerun. Not the ordinary work both did. For each, cause:
+   - "context": the context influenced it, for better or worse. In the UNBLOCKED arm: the research calls; turns the context shaped (a simpler fix it pointed to, exploration it made unnecessary, a lead followed, including a misleading one, and what that lead cost). In the BASELINE: work it did because it lacked what the context supplied (exploring to find it; building a different or larger solution than the context showed was needed, with the tests, build and lint fixes that solution brought). Ask of each episode: would it plausibly have gone differently had this arm had (or lacked) the context?
+   - "agent": a choice the model made on its own that the context did not plausibly influence: its own coding mistakes and the loops fixing them, a guessed test expectation, its choice of test scope, over-building unrelated to anything the context said, redundant reruns. The context arm does not answer for these, and the Baseline is not charged for its own either.
+   - "environment": the environment: flaky or unrelated test failures, infrastructure timeouts, tool errors.
+   Be strict and even-handed: a test-fix loop is "agent" unless the context caused the mistake being fixed. Count only the EXCESS: when both arms verified their change, leave out of every episode one verification run in each arm (the final passing build or test run) and list only the failing runs, fixes and reruns beyond it; likewise, when both explored, list only the exploration one arm needed beyond the other. what ≤ 12 words. Turn ranges must not overlap within an arm.
 
 "The agent ran more tests" is agent behaviour, not context. "The agent chose sdlc because a research item showed the org roster" is context. "The agent said no prior art existed because research surfaced none, while the baseline found it with a code search" is context that hurt.
 

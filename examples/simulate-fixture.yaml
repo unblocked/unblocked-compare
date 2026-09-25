@@ -1,4 +1,4 @@
-# Context Engine Simulator — Fixture Format
+# Context engine simulation — fixture format
 #
 # Run with: bun run simulate --fixture examples/simulate-fixture.yaml
 # CLI flags override fixture values when both are provided.
@@ -10,29 +10,31 @@ task: |
   Add a new /health endpoint to the API server that returns
   a JSON object with the service name and current timestamp.
 
+# Optional: acceptance criteria. They become the requirement list the checker
+# and judge grade both arms against.
 criteria: |
   1. GET /health returns 200 with JSON body
   2. Response includes "service" and "timestamp" fields
   3. Endpoint is registered in the router following existing patterns
 
-# Optional: agent CLI to use (default: claude)
+# Optional: agent CLI under test, which also runs the simulated engine's
+# research (default: claude)
 # agent: claude  # claude | codex | cursor
 
-# Optional: model overrides (default: sonnet)
-# model: sonnet
-# contextModel: sonnet
-# evalModel: sonnet
+# Optional: models (default: opus for claude, the CLI's default otherwise)
+# model: opus
+# contextModel: sonnet   # research agent; default: same as model
+# judgeModel: fable
 
-# Optional: additional instructions for context collection agents
+# Optional: extra instructions for every research call
 # contextInstructions: |
 #   Focus on the API routing layer and existing health check patterns.
 
-# Optional: custom API base URL (passed as ANTHROPIC_BASE_URL to Claude)
-# apiUrl: https://your-proxy.example.com
+# Optional: timeouts (seconds): per arm, and per research call
+# timeout: 5400
+# contextTimeout: 300
 
-# Optional: timeout per claude invocation (seconds)
-# timeout: 3600
-# contextTimeout: 600
-
-# Optional: keep worktrees after run for inspection
+# Optional
+# review: true         # requirement check and fix rounds
+# repeat: 1            # comparisons to run
 # keepWorktrees: true

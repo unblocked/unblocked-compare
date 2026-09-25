@@ -3,9 +3,10 @@ import type { ArmResult, ComparisonResult, EconomicsBreakdown, ToolCall } from "
 import { cacheWriteRate, priceFor } from "./util.ts";
 import { AGENTS } from "./agents/index.ts";
 import { VERIFY_CMD } from "./analyst.ts";
+import { unblockedCommand } from "./unblocked-cli.ts";
 
 const isResearch = (name: string, input: Record<string, unknown>) =>
-  name.toLowerCase().includes("unblocked") || (name === "Bash" && /^unblocked\s+context/.test(String(input.command ?? "")));
+  name.toLowerCase().includes("unblocked") || (name === "Bash" && !!unblockedCommand(String(input.command ?? "")));
 
 function researchCarried(arm: ArmResult): { calls: number; payloadTokens: number; carriedTokens: number } {
   let jsonl = "";
@@ -57,6 +58,7 @@ function toolWaitByCategory(arm: ArmResult, core: boolean): Record<string, numbe
     const cmd = String(tc.args.command ?? "");
     const kind = tc.isMcp ? (tc.mcpServer?.toLowerCase().includes("unblocked") ? "research" : "mcp")
       : tc.name !== "Bash" ? "file ops"
+      : unblockedCommand(cmd) ? "research"
       : /\b(rubocop|gofmt|go vet|tsc|eslint|detekt|ktlint)\b|lint/.test(cmd) ? "lint/typecheck"
       : VERIFY_CMD.test(cmd) ? "tests/CI/build"
       : /\b(gh api|gh search|curl |wget |rails runner)\b/.test(cmd) ? "external lookups"

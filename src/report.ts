@@ -4,7 +4,7 @@ import type { ArmResult, ComparisonResult, Met, ToolCall } from "./types.ts";
 import { formatCost, formatDiffSummary, formatDuration, formatTokens, modelCost, padLeft, padRight, priceFor, totalTokens, uncachedTokens } from "./util.ts";
 import { AGENTS, type AgentName } from "./agents/index.ts";
 import { reconcile, type Reconciliation, type Totals } from "./context-effect.ts";
-import { BATCH_CSS, FONTS, REPORT_CSS } from "./report-style.ts";
+import { BATCH_CSS, COUNT_UP, FONTS, REPORT_CSS } from "./report-style.ts";
 import type { TokenUsage } from "./types.ts";
 import { unblockedCommand } from "./unblocked-cli.ts";
 
@@ -499,20 +499,63 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
           <span class="range">Requirements: Baseline ${score("baseline")}; ${escapeHtml(L.short)} ${score("unblocked")}.${q.verdict.tieBreaker?.applied ? " The blinded judge called a tie; a context-led discovery broke it." : ""}</span></td>
       </tr>`;
   };
+  // The opening: the task, the verdict in a sentence, and the scoreboard.
+  const [taskHead, ...taskTail] = result.task.trim().split("\n");
+  const taskTitle = taskHead.length <= 110 ? taskHead : "";
+  const taskRest = (taskTitle ? taskTail.join("\n") : result.task).trim();
+  const boardCell = (label: string, key: keyof Totals, fmt: (n: number) => string) => {
+    const e = ce!;
+    const infl = pctChange(e.adjustedBaseline[key], e.adjustedUnblocked[key]);
+    const raw = pctChange(e.baseline[key], e.unblocked[key]);
+    const cls = infl === "N/A" || /^[+-]?0%$/.test(infl) ? "" : e.adjustedUnblocked[key] < e.adjustedBaseline[key] ? " better" : " worse";
+    const n = parseInt(infl, 10);
+    return `<div class="cell"><div class="cell-label">${label}</div><div class="cell-fig${cls}"${Number.isFinite(n) ? ` data-count="${n}"` : ""}>${pctHtml(infl)}</div><div class="cell-sub">context's influence, ${fmt(e.adjustedBaseline[key])} to ${fmt(e.adjustedUnblocked[key])}</div><div class="cell-sub">measured ${pctHtml(raw)}, ${fmt(e.baseline[key])} to ${fmt(e.unblocked[key])}</div></div>`;
+  };
+  const qualityCell = () => {
+    const q = result.quality;
+    if (!q) return `<div class="cell"><div class="cell-label">Quality</div><div class="cell-fig word">Not judged</div></div>`;
+    const better = q.verdict.better;
+    const score = (c: "baseline" | "unblocked") => {
+      const reqs = q.requirements.map(r => r[c].status);
+      const met = reqs.filter(s => s === "met").length, partial = reqs.filter(s => s === "partial").length;
+      return `${met} of ${reqs.length} met${partial ? `, ${partial} partial` : ""}`;
+    };
+    return `<div class="cell"><div class="cell-label">Quality with ${escapeHtml(L.short)}</div><div class="cell-fig word${better === "unblocked" ? " better" : better === "baseline" ? " worse" : ""}">${better === "tie" ? "Tie" : better === "unblocked" ? "Better" : "Worse"}</div><div class="cell-sub">${escapeHtml(L.short)} ${score("unblocked")}</div><div class="cell-sub">Baseline ${score("baseline")}${q.verdict.tieBreaker?.applied ? "; blinded tie, broken by a context-led discovery" : ""}</div></div>`;
+  };
+  const facts = `<dl class="facts">
+      <div><dt>Repository</dt><dd>${escapeHtml(repoName(result.repo))}</dd></div>
+      <div><dt>Branch</dt><dd>${escapeHtml(result.branch)}</dd></div>
+      <div><dt>Agent</dt><dd>${escapeHtml(agentLabel(result))}</dd></div>
+      <div><dt>Model</dt><dd>${escapeHtml(result.model)}</dd></div>
+    </dl>`;
+  const heroHtml = !ce ? "" : `
+  <header class="hero">
+    <p class="hero-meta"><span>Unblocked Compare</span><span>${new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}</span></p>
+    <p class="hero-vs">${escapeHtml(L.vs)}</p>
+    ${taskTitle ? `<h1 class="hero-task">${escapeHtml(taskTitle)}</h1>` : `<h1 class="hero-task">${escapeHtml(L.vs)}</h1>`}
+    ${taskRest ? `<p class="hero-task-rest">${escapeHtml(taskRest)}</p>` : ""}
+    ${ce.tldr ? `<p class="hero-lede">${typeset(ce.tldr.headline)}</p>` : ""}
+    <div class="board">
+      ${qualityCell()}
+      ${boardCell("Cost", "costUsd", usd2)}
+      ${boardCell("Time", "durationMs", formatDuration)}
+      ${boardCell("Tokens", "tokens", formatTokens)}
+    </div>
+    ${facts}
+  </header>`;
   const tldrSection = !ce ? "" : `
   <section class="section summary">
-    <h2 class="section-title">Summary</h2>
-    ${ce.tldr ? `<p class="lede">${typeset(ce.tldr.headline)}</p>` : ""}
+    <h2 class="section-title">What drove it</h2>
+    ${ce.tldr?.bullets.length ? `<ul class="points">${ce.tldr.bullets.map(b => `<li>${typeset(b)}</li>`).join("")}</ul>` : ""}
+    <h2 class="section-title">How each difference splits</h2>
     <table class="results">
-      <thead><tr><th></th><th>Context's influence</th><th>Measured</th><th>How the measured difference splits</th></tr></thead>
+      <thead><tr><th></th><th>Context's influence</th><th>Measured</th><th>Measured = context's influence + agents' own mistakes + other work</th></tr></thead>
       <tbody>
-        ${qualityRow()}
         ${resultRow("Cost", "costUsd", usd2)}
         ${resultRow("Time", "durationMs", formatDuration)}
         ${resultRow("Tokens", "tokens", formatTokens)}
       </tbody>
     </table>
-    ${ce.tldr?.bullets.length ? `<ul class="points">${ce.tldr.bullets.map(b => `<li>${typeset(b)}</li>`).join("")}</ul>` : ""}
     ${ce.episodes.length ? `<details class="ledger"><summary>How these numbers are worked out (${ce.episodes.length} episodes)</summary>
       ${workings()}
       <table class="tool-table">
@@ -667,21 +710,16 @@ ${FONTS}
 <body>
 <main class="sheet">
 
-  <header class="masthead">
+  ${ce ? heroHtml : `<header class="masthead">
     <p class="product">Unblocked Compare, ${timestamp}</p>
     <h1>${escapeHtml(L.vs)}</h1>
-    <dl class="facts">
-      <div><dt>Repository</dt><dd>${escapeHtml(repoName(result.repo))}</dd></div>
-      <div><dt>Branch</dt><dd>${escapeHtml(result.branch)}</dd></div>
-      <div><dt>Agent</dt><dd>${escapeHtml(agentLabel(result))}</dd></div>
-      <div><dt>Model</dt><dd>${escapeHtml(result.model)}</dd></div>
-    </dl>
+    ${facts}
   </header>
 
   <section class="section">
     <h2 class="section-title">Task</h2>
     <blockquote class="task">${escapeHtml(result.task)}</blockquote>
-  </section>
+  </section>`}
 
   ${tldrSection}
 
@@ -937,6 +975,7 @@ ${FONTS}
   <footer class="footer">Generated by Unblocked Compare. <a href="https://getunblocked.com">getunblocked.com</a></footer>
 
 </main>
+${COUNT_UP}
 </body>
 </html>`;
 

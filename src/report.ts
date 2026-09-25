@@ -231,6 +231,7 @@ export function printReport(result: ComparisonResult): void {
     r(`  Repo:     ${repoName(result.repo)}`),
     r(`  Branch:   ${result.branch}`),
     r(`  Agent:    ${agentLabel(result)}${result.contextEngine === "simulated" ? " · simulated context engine" : ""}`),
+    ...tldrLines(result).map(l => r(l)),
     r(`  Model:    ${result.model}`),
     r(`  Task:     ${result.task.slice(0, 60)}${result.task.length > 60 ? "..." : ""}`),
 
@@ -412,6 +413,41 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
       <div class="hero-detail">${fmt(bVal)} &rarr; ${fmt(uVal)}</div>
     </div>`;
   };
+
+  // TL;DR: the headline numbers, raw and with confounders removed, and a short
+  // plain-language account of them and of the context's role.
+  const ce = result.contextEffect;
+  const tldrCard = (label: string, raw: [number, number], adj: [number, number], fmt: (n: number) => string) => {
+    const pct = pctChange(raw[0], raw[1]);
+    const cls = pct === "N/A" || /^[+-]?0%$/.test(pct) ? " neutral" : raw[1] < raw[0] ? " positive" : " negative";
+    const adjChanged = Math.abs(adj[1] - raw[1]) > 1e-9;
+    return `
+    <div class="hero-card${cls}">
+      <div class="hero-label">${label}</div>
+      <div class="hero-value${cls}">${pct}</div>
+      <div class="hero-detail">Baseline ${fmt(raw[0])} &rarr; ${escapeHtml(L.short)} ${fmt(raw[1])}</div>
+      ${adjChanged ? `<div class="hero-detail tldr-adjusted">Context effect only: <b>${pctChange(adj[0], adj[1])}</b> (${fmt(adj[0])} &rarr; ${fmt(adj[1])})</div>` : ""}
+    </div>`;
+  };
+  const causeLabel = { context: "context", agent: "agent (not context)", environment: "environment" } as const;
+  const tldrSection = !ce ? "" : `
+  <div class="section tldr">
+    <div class="section-title">TL;DR <span class="section-sub">quality: ${result.quality ? escapeHtml(result.quality.verdict.better === "tie" ? "tie" : result.quality.verdict.better === "unblocked" ? `${L.short} better` : "Baseline better") : "not judged"}</span></div>
+    ${ce.tldr ? `<div class="tldr-headline">${escapeHtml(ce.tldr.headline)}</div>` : ""}
+    <div class="hero-grid hero-3">
+      ${tldrCard("Cost", [ce.baseline.costUsd, ce.unblocked.costUsd], [ce.adjustedBaseline.costUsd, ce.adjustedUnblocked.costUsd], formatCost)}
+      ${tldrCard("Time", [ce.baseline.durationMs, ce.unblocked.durationMs], [ce.adjustedBaseline.durationMs, ce.adjustedUnblocked.durationMs], formatDuration)}
+      ${tldrCard("Tokens", [ce.baseline.tokens, ce.unblocked.tokens], [ce.adjustedBaseline.tokens, ce.adjustedUnblocked.tokens], formatTokens)}
+    </div>
+    ${ce.tldr?.bullets.length ? `<ul class="tldr-bullets">${ce.tldr.bullets.map(b => `<li>${escapeHtml(b)}</li>`).join("")}</ul>` : ""}
+    ${ce.episodes.length ? `<details class="tldr-episodes"><summary>What made the arms differ (${ce.episodes.length} episodes)</summary>
+      <table class="tool-table">
+        <thead><tr><th>Arm</th><th>Turns</th><th>Cause</th><th>What</th><th>Time</th><th>Cost</th><th>Tokens</th></tr></thead>
+        <tbody>${ce.episodes.map(e => `<tr${e.cause === "context" ? ` class="highlight-row"` : ""}><td>${e.arm === "baseline" ? "Baseline" : escapeHtml(L.short)}</td><td>T${e.fromTurn}&ndash;T${e.toTurn}</td><td>${causeLabel[e.cause]}</td><td>${escapeHtml(e.what)}</td><td>${formatDuration(e.durationMs)}</td><td>${formatCost(e.costUsd)}</td><td>${formatTokens(e.tokens)}</td></tr>`).join("")}</tbody>
+      </table>
+      <div class="section-note" style="margin-top: 8px;">Core work, housekeeping removed. Episodes and causes come from the un-blinded impact pass; their time, cost and tokens are summed from the per-message figures. "Context effect only" is the Baseline plus the context-driven differences (context episodes in the ${escapeHtml(L.short)} arm, minus the Baseline's episodes caused by lacking the context): agent and environment episodes are confounders and drop out.</div>
+    </details>` : ""}
+  </div>`;
 
   const housekeepingLedger = (label: string, arm: ArmResult) => {
     const rows = arm.attribution!.turns.filter(t => t.label === "housekeeping");
@@ -687,6 +723,11 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   }
 
   .section { margin-bottom: 40px; }
+  .tldr-headline { font-size: 19px; font-weight: 600; line-height: 1.5; margin: -4px 0 20px; }
+  .tldr .hero-grid { margin-bottom: 20px; }
+  .tldr-adjusted { margin-top: 6px; font-size: 13px; }
+  .tldr-bullets { margin: 0 0 12px 20px; font-size: 15px; line-height: 1.7; }
+  .tldr-episodes summary { cursor: pointer; color: var(--text-muted); font-size: 13px; margin-bottom: 10px; }
   .section-title {
     font-size: 18px;
     font-weight: 700;
@@ -920,6 +961,8 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
     <div class="meta-item"><span class="meta-key">Model</span><span class="meta-val">${escapeHtml(result.model)}</span></div>
     <div class="meta-item"><span class="meta-key">Arms cost / analysis</span><span class="meta-val">${formatCost(result.totalEstimatedCost)}${result.analysisCostUsd ? ` / ${formatCost(result.analysisCostUsd)}` : ""}</span></div>
   </div>
+
+  ${tldrSection}
 
   <div class="section">
     <div class="section-title">Task</div>
@@ -1183,6 +1226,24 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   const htmlPath = path.join(outDir, "report.html");
   fs.writeFileSync(htmlPath, html);
   return htmlPath;
+}
+
+// Console TL;DR: headline, the three numbers raw and with confounders removed.
+function tldrLines(result: ComparisonResult): string[] {
+  const ce = result.contextEffect;
+  if (!ce) return [];
+  const pct = (a: number, b: number) => (a ? `${b >= a ? "+" : ""}${Math.round(((b - a) / a) * 100)}%` : "n/a");
+  const row = (name: string, raw: [number, number], adj: [number, number], fmt: (n: number) => string) =>
+    `  ${padRight(name, 8)}${padLeft(fmt(raw[0]), 10)} → ${padLeft(fmt(raw[1]), 10)} ${padLeft(pct(raw[0], raw[1]), 6)}   context effect only ${pct(adj[0], adj[1])}`;
+  return [
+    "",
+    ...wrap("TL;DR" + (ce.tldr ? `: ${ce.tldr.headline}` : ""), W - 8).map(l => `  ${l}`),
+    row("Cost", [ce.baseline.costUsd, ce.unblocked.costUsd], [ce.adjustedBaseline.costUsd, ce.adjustedUnblocked.costUsd], formatCost),
+    row("Time", [ce.baseline.durationMs, ce.unblocked.durationMs], [ce.adjustedBaseline.durationMs, ce.adjustedUnblocked.durationMs], formatDuration),
+    row("Tokens", [ce.baseline.tokens, ce.unblocked.tokens], [ce.adjustedBaseline.tokens, ce.adjustedUnblocked.tokens], formatTokens),
+    ...(ce.tldr?.bullets ?? []).flatMap(b => wrap(b, W - 10).map((l, i) => `   ${i ? " " : "•"} ${l}`)),
+    "",
+  ];
 }
 
 // The simulated context engine's research calls: what each cost and took.

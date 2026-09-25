@@ -14,6 +14,7 @@ import { git, isAncestor, snapshotRefs, tryGit } from "./git.ts";
 import { attribute } from "./attribution.ts";
 import { applyTieBreaker, assessQuality } from "./quality.ts";
 import { reviseRequirements } from "./revision.ts";
+import { computeContextEffect, writeTldr } from "./context-effect.ts";
 import { assessImpact } from "./impact.ts";
 import { economics } from "./economics.ts";
 import { adjudicateDisputes, applyWaivers, disputedSection, extractRequirements, fixPrompt, reviewDraft } from "./review.ts";
@@ -482,12 +483,18 @@ export async function run(config: Config, outDirOverride?: string, sharedSpec?: 
     if (q) { const im = await assessImpact(result, config.judgeModel); if (im) result.impact = im; }
     else log("Impact: skipped, no quality verdict to assess against");
     applyTieBreaker(result);
+    const effect = computeContextEffect(result);
+    if (effect) {
+      const tldr = await writeTldr(result, effect, config.contextEngine ? "Simulated Context" : "Unblocked", config.checkerModel);
+      if (tldr) effect.tldr = tldr;
+      result.contextEffect = effect;
+    }
     if (result.quality?.verdict.tieBreaker?.applied) log(`Verdict: blinded tie → Unblocked by the tie-breaker (${result.quality.verdict.tieBreaker.reason})`);
   } else if (config.analystModel) {
     result.economics = economics(result);
   }
   const reviewCost = (a: ArmResult) => (a.review?.passes ?? []).reduce((s, p) => s + p.reviewCostUsd, 0);
-  result.analysisCostUsd = (baseline.attribution?.analystCostUsd ?? 0) + (unblocked.attribution?.analystCostUsd ?? 0) + (result.quality?.judgeCostUsd ?? 0) + (result.impact?.costUsd ?? 0) + reviewCost(baseline) + reviewCost(unblocked) + (reviewSpec?.costUsd ?? 0) + (reviewSpec?.revisionCostUsd ?? 0);
+  result.analysisCostUsd = (baseline.attribution?.analystCostUsd ?? 0) + (unblocked.attribution?.analystCostUsd ?? 0) + (result.quality?.judgeCostUsd ?? 0) + (result.impact?.costUsd ?? 0) + reviewCost(baseline) + reviewCost(unblocked) + (reviewSpec?.costUsd ?? 0) + (reviewSpec?.revisionCostUsd ?? 0) + (result.contextEffect?.tldr?.costUsd ?? 0);
   log(`Experiment wall time ${formatDuration(Date.now() - startTime)} incl. analysis`);
 
   printReport(result);

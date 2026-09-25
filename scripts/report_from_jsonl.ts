@@ -17,6 +17,7 @@ import { attribute, buildWalk, rollup } from "../src/attribution.ts";
 import { applyTieBreaker, assessQuality } from "../src/quality.ts";
 import { assessImpact } from "../src/impact.ts";
 import { reviseRequirements } from "../src/revision.ts";
+import { computeContextEffect, writeTldr } from "../src/context-effect.ts";
 import { extractRequirements } from "../src/review.ts";
 import { economics } from "../src/economics.ts";
 import { extractUnblockedCalls } from "../src/runner.ts";
@@ -189,8 +190,17 @@ else if (orig?.impact) result.impact = orig.impact;
 
 applyTieBreaker(result);
 
+// Recompute the context effect whenever there are episodes (from a fresh
+// impact pass or the run's own), and rewrite the TL;DR from it (cheap).
+const effect = computeContextEffect(result);
+if (effect) {
+  const tldr = await writeTldr(result, effect, result.contextEngine === "simulated" ? "Simulated Context" : "Unblocked", "sonnet");
+  if (tldr) effect.tldr = tldr;
+  result.contextEffect = effect;
+} else if (orig?.contextEffect) result.contextEffect = orig.contextEffect;
+
 const reviewCost = (a: ArmResult) => (a.review?.passes ?? []).reduce((s, p) => s + p.reviewCostUsd, 0);
-result.analysisCostUsd = (baseline.attribution?.analystCostUsd ?? 0) + (unblocked.attribution?.analystCostUsd ?? 0) + (result.quality?.judgeCostUsd ?? 0) + (result.impact?.costUsd ?? 0) + reviewCost(baseline) + reviewCost(unblocked) + (result.reviewSpec?.costUsd ?? 0) + (result.reviewSpec?.revisionCostUsd ?? 0);
+result.analysisCostUsd = (baseline.attribution?.analystCostUsd ?? 0) + (unblocked.attribution?.analystCostUsd ?? 0) + (result.quality?.judgeCostUsd ?? 0) + (result.impact?.costUsd ?? 0) + reviewCost(baseline) + reviewCost(unblocked) + (result.reviewSpec?.costUsd ?? 0) + (result.reviewSpec?.revisionCostUsd ?? 0) + (result.contextEffect?.tldr?.costUsd ?? 0);
 
 // Next to the run it regenerates, when given its result.json.
 const outDir = thirdArg?.endsWith(".json") ? path.join(path.dirname(path.resolve(thirdArg)), "regenerated") : path.join(process.cwd(), "results", "regenerated");

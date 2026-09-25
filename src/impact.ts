@@ -91,8 +91,14 @@ const SCHEMA = {
     discoveryAttribution: { type: "object", properties: {
       contextLed: { type: "boolean" }, evidence: { type: "string" },
     }, required: ["contextLed", "evidence"] },
+    episodes: { type: "array", items: { type: "object", properties: {
+      arm: { type: "string", enum: ["baseline", "unblocked"] },
+      fromTurn: { type: "integer" }, toTurn: { type: "integer" },
+      cause: { type: "string", enum: ["context", "agent", "environment"] },
+      what: { type: "string" },
+    }, required: ["arm", "fromTurn", "toTurn", "cause", "what"] } },
   },
-  required: ["research", "impact", "loss", "economics", "discoveryAttribution"],
+  required: ["research", "impact", "loss", "economics", "discoveryAttribution", "episodes"],
 };
 
 function prompt(result: ComparisonResult): string {
@@ -119,6 +125,11 @@ Answer with evidence from the material below. Keep every string short; this goes
 3. loss: only meaningful when outcome is "worse" (otherwise fill n/a and empty strings). Name what the BASELINE found that the UNBLOCKED agent never had, if anything. Say whether the baseline found it by a systematic search a careful engineer would do (e.g. a code search on the org's GitHub for the exact pattern) or by chance. Then pick the UNBLOCKED failure mode: the context misled it (returned something wrong, or a confident "nothing found" the agent repeated); the context made it stop searching early (it had a lead in hand, or an obvious next step, and treated the research as the answer); the context did not include it and the agent never looked elsewhere; or the loss is unrelated to context. explanation ≤ 2 sentences.
 4. economics: three explanations, ≤ 2 sentences each, of why the arms differ in cost, time and tokens. Name only the one or two terms that moved each delta, with their size from the ECONOMICS BREAKDOWN, and what in the transcripts caused them. Say what the cost bought when it bought something. Same standard for both arms.
 5. discoveryAttribution: the blinded judge recorded the UNBLOCKED agent's candidate decisive discovery (below, or "none"). Decide whether the research context led to it: contextLed is true only when a research call's returned items contained the fact, or pointed at the file, thread or PR that contained it, and the agent acted on it after that call (cite the turn and the item). If the agent found the fact by its own reading, grep, git history or reasoning, or there is no candidate, contextLed is false. evidence ≤ 25 words. This decides a tie-breaker, so be strict: a research result that merely mentioned the area is not leading the agent to the fact.
+6. episodes: the stretches of work, by turn range in each arm's walk, that make the two arms' cost and time differ. List only what one arm did and the other did not (or did much more of): a test-fix loop, an extra build, over-scoped work, research calls, exploration one arm needed and the other skipped, a flaky rerun. Not the ordinary work both did. For each, cause:
+   - "context": caused by the research context: the research calls themselves, following a lead it gave, exploring where it pointed, or a misleading lead it gave. Exploration the BASELINE needed because it had no context is also "context" (its absence caused it).
+   - "agent": the agent's own behaviour, unrelated to the context: its own coding mistakes and the loops fixing them, its choice of test scope, over-building beyond the task, redundant reruns.
+   - "environment": the environment: flaky or unrelated test failures, infrastructure timeouts, tool errors.
+   Be strict and even-handed: a test-fix loop is "agent" unless the context caused the mistake being fixed. Count only the EXCESS: when both arms verified their change, leave out of every episode one verification run in each arm (the final passing build or test run) and list only the failing runs, fixes and reruns beyond it; likewise, when both explored, list only the exploration one arm needed beyond the other. what ≤ 12 words. Turn ranges must not overlap within an arm.
 
 "The agent ran more tests" is agent behaviour, not context. "The agent chose sdlc because a research item showed the org roster" is context. "The agent said no prior art existed because research surfaced none, while the baseline found it with a code search" is context that hurt.
 

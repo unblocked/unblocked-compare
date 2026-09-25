@@ -434,23 +434,32 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   const compareBlock = (label: string, key: keyof Totals, fmt: (n: number) => string, unit = "") => {
     const e = ce!;
     const bv = e.baseline[key], uv = e.unblocked[key];
-    const max = Math.max(bv, uv) || 1;
+    const r = reconcile(e, key);
+    const infl = r.influence;
+    const max = Math.max(bv, uv, bv + infl) || 1;
+    const w = (v: number) => `${((Math.abs(v) / max) * 100).toFixed(1)}%`;
     const raw = pctChange(bv, uv);
     const rawCls = raw === "N/A" || /^[+-]?0%$/.test(raw) ? "" : uv < bv ? "better" : "worse";
-    const r = reconcile(e, key);
+    const inflPct = pctChange(bv, bv + infl).replace(/^[-+]/, "");
     const small = (v: number) => Math.abs(v) < Math.max(bv, uv) * 0.01;
-    const line = (v: number, saved: string, cost: string) => small(v) ? "" :
-      `<li class="${v < 0 ? "good" : "bad"}">${v < 0 ? `${saved} ${plain(v, fmt, unit)}` : `${cost} ${plain(v, fmt, unit)}`}</li>`;
     const ctxName = L.short === "Unblocked" ? "Unblocked's context" : "The context";
+    // The Without bar marks what the context saved (green) or added (red):
+    // that piece is the context's influence, the hero's percentage.
+    const fits = (v: number, text: string) => Math.abs(v) / max >= 0.02 + 0.03 * text.length;
+    const ctxText = `${infl < 0 ? "context saved" : "context added"} ${fmt(Math.abs(infl))}`;
+    const ctxSeg = small(infl) ? "" : `<span class="cb-bar ${infl < 0 ? "saved" : "added"}" style="width: ${w(infl)}" title="${ctxText}">${fits(infl, ctxText) ? ctxText : fits(infl, fmt(Math.abs(infl))) ? fmt(Math.abs(infl)) : ""}</span>`;
+    const baseW = infl < 0 ? bv + infl : bv;
+    const line = (v: number, saved: string, added: string, extra = "") => small(v) ? "" :
+      `<li class="${v < 0 ? "good" : "bad"}">${v < 0 ? saved : added} ${fmt(Math.abs(v))}${unit}${extra}</li>`;
     return `
       <div class="cmp">
         <h3 class="cmp-label">${label}</h3>
         <div class="cmp-bars">
-          <div class="cb-row"><span class="cb-name">${without}</span><div class="cb-track"><span class="cb-bar base" style="width: ${((bv / max) * 100).toFixed(1)}%"></span><span class="cb-val">${fmt(bv)}</span></div></div>
-          <div class="cb-row"><span class="cb-name ctx">${escapeHtml(L.arm)}</span><div class="cb-track"><span class="cb-bar ctx" style="width: ${((uv / max) * 100).toFixed(1)}%"></span><span class="cb-val">${fmt(uv)}${rawCls ? ` <em class="${rawCls}">${pctHtml(raw)}</em>` : ""}</span></div></div>
+          <div class="cb-row"><span class="cb-name">${without}</span><div class="cb-track"><span class="cb-bar base" style="width: ${w(baseW)}"></span>${ctxSeg}<span class="cb-val">${fmt(bv)}</span></div></div>
+          <div class="cb-row"><span class="cb-name ctx">${escapeHtml(L.arm)}</span><div class="cb-track"><span class="cb-bar ctx" style="width: ${w(uv)}"></span><span class="cb-val">${fmt(uv)}${rawCls ? `, <em class="${rawCls}">${pctHtml(raw)} overall</em>` : ""}</span></div></div>
         </div>
         <ul class="why">
-          ${line(r.influence, `${ctxName} saved`, `${ctxName} added`)}
+          ${line(infl, `${ctxName} saved`, `${ctxName} added`, ` (${inflPct})`)}
           ${line(r.ownMistakes, "Fewer mistakes saved", "More mistakes added")}
           ${line(r.other, "Other work saved", "Other work added")}
         </ul>
@@ -516,7 +525,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
     const cls = infl === "N/A" || /^[+-]?0%$/.test(infl) ? "" : e.adjustedUnblocked[key] < e.adjustedBaseline[key] ? " better" : " worse";
     const n = parseInt(infl, 10);
     const saved = e.adjustedUnblocked[key] - e.adjustedBaseline[key];
-    return `<div class="cell"><div class="cell-label">${label}</div><div class="cell-fig${cls}"${Number.isFinite(n) ? ` data-count="${n}"` : ""}>${pctHtml(infl)}</div><div class="cell-sub">${saved < 0 ? `Context saved ${fmt(-saved)} of ${fmt(e.baseline[key])}` : saved > 0 ? `Context added ${fmt(saved)} to ${fmt(e.baseline[key])}` : "Context made no difference"}</div><div class="cell-sub">Total: ${fmt(e.baseline[key])} &rarr; ${fmt(e.unblocked[key])}</div></div>`;
+    return `<div class="cell"><div class="cell-label">${label}</div><div class="cell-fig${cls}"${Number.isFinite(n) ? ` data-count="${n}"` : ""}>${pctHtml(infl)}</div><div class="cell-sub">${saved < 0 ? `Context saved ${fmt(-saved)} of ${fmt(e.baseline[key])}` : saved > 0 ? `Context added ${fmt(saved)} to ${fmt(e.baseline[key])}` : "Context made no difference"}</div><div class="cell-sub">Overall: ${fmt(e.baseline[key])} &rarr; ${fmt(e.unblocked[key])} (${pctHtml(pctChange(e.baseline[key], e.unblocked[key]))})</div></div>`;
   };
   const qualityCell = () => {
     const q = result.quality;

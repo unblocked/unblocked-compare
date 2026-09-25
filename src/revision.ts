@@ -96,6 +96,7 @@ Rules:
 - An agent's opinion, reasoning, preference or claim about what the team wants is not evidence. Code the agent wrote is not evidence.
 - Change only what the evidence changes. "revised" is the requirement as the team intends it, phrased so both agents can be graded against it, at most 40 words. "reason" at most 25 words.
 - Scope: when a requirement covers several cases (X or Y) and the quote speaks to only some of them, restate only those cases and keep the task's original wording for the rest, in the same revised requirement. Do not extend a decision to a case the quote does not name.
+- State the behaviour the team intends, not how to build it. Do not put an implementation detail (a flag, parameter, function, file or approach) into the revised requirement unless the quoted decision itself says it must be built that way; a cause or a suggested fix in the evidence is not such a decision. Any implementation that produces the intended behaviour must be able to meet the revised requirement.
 - agent: the agent whose EVIDENCE holds the quote.
 - Return an empty list when nothing qualifies. Most tasks need no revision.
 

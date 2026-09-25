@@ -1,5 +1,5 @@
-// Report styling: a light sheet under a deep plum hero. Green is better and
-// red is worse, nowhere else; orchid is the context arm, grey-violet the Baseline.
+// Report styling: a light sheet under a deep navy hero. Green is better and
+// red is worse, nowhere else; cobalt is the context arm, cool grey the Baseline.
 // Bricolage Grotesque for display, Atkinson Hyperlegible for reading.
 export const FONTS = `<link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -7,17 +7,17 @@ export const FONTS = `<link rel="preconnect" href="https://fonts.googleapis.com"
 
 export const REPORT_CSS = `
   :root {
-    --ground: #f1edf3;
+    --ground: #edf0f5;
     --paper: #ffffff;
-    --ink: #1e1220;
-    --text: #1e1220;
-    --text-muted: #6b5f6e;
-    --rule: #e0d9e4;
-    --rule-soft: #efeaf2;
-    --tint: #f7f4f9;
-    --context: #8e3fa8;
-    --context-tint: #f4eaf8;
-    --baseline: #8a8196;
+    --ink: #172033;
+    --text: #172033;
+    --text-muted: #5d6678;
+    --rule: #dde2ea;
+    --rule-soft: #eceff4;
+    --tint: #f5f7fa;
+    --context: #2f5bd8;
+    --context-tint: #e9effc;
+    --baseline: #8a93a6;
     --better: #16833f;
     --worse: #c42b2b;
     --green: #16833f;
@@ -25,13 +25,13 @@ export const REPORT_CSS = `
     --red: #c42b2b;
     --red-tint: #fbe9e7;
     --yellow: #94640a;
-    --band: #2a0a1f;
-    --band-ink: #fbeef3;
-    --band-muted: rgba(251, 238, 243, 0.62);
-    --band-rule: rgba(251, 238, 243, 0.16);
-    --band-better: #8fe39a;
+    --band: #0c1630;
+    --band-ink: #eef3fc;
+    --band-muted: rgba(238, 243, 252, 0.62);
+    --band-rule: rgba(238, 243, 252, 0.16);
+    --band-better: #7fe0a0;
     --band-worse: #ff8a80;
-    --gold: #e9c98b;
+    --band-label: #9fb8ee;
     --display: "Bricolage Grotesque", "Atkinson Hyperlegible Next", system-ui, sans-serif;
     --sans: "Atkinson Hyperlegible Next", system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: "Atkinson Hyperlegible Mono", ui-monospace, "SF Mono", Menlo, monospace;
@@ -42,11 +42,11 @@ export const REPORT_CSS = `
   a { color: var(--context); text-underline-offset: 2px; }
   :focus-visible { outline: 2px solid var(--context); outline-offset: 2px; }
 
-  body { background: radial-gradient(1200px 640px at 50% -220px, #e3d2ee, transparent 70%), var(--ground); }
-  .sheet { max-width: 1000px; margin: 40px auto 64px; padding: 0 64px 44px; background: var(--paper); border-radius: 14px; overflow: hidden; box-shadow: 0 1px 0 rgba(42, 10, 31, 0.06), 0 50px 100px -40px rgba(42, 10, 31, 0.5); }
+  body { background: radial-gradient(1200px 640px at 50% -220px, #d4def2, transparent 70%), var(--ground); }
+  .sheet { max-width: 1000px; margin: 40px auto 64px; padding: 0 64px 44px; background: var(--paper); border-radius: 14px; overflow: hidden; box-shadow: 0 1px 0 rgba(12, 22, 48, 0.06), 0 50px 100px -40px rgba(12, 22, 48, 0.5); }
 
   .masthead { margin: 0 -64px 44px; padding: 52px 64px 36px; background: var(--band); color: var(--band-ink); }
-  .product { font-size: 14px; color: var(--gold); margin-bottom: 10px; }
+  .product { font-size: 14px; color: var(--band-label); margin-bottom: 10px; }
   .masthead h1 { font-family: var(--display); font-size: 64px; line-height: 0.98; font-weight: 800; letter-spacing: -0.035em; font-variation-settings: "opsz" 96; margin-bottom: 36px; }
   .facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px 24px; padding-top: 18px; border-top: 1px solid var(--band-rule); }
   .facts dt { font-size: 13px; color: var(--band-muted); }
@@ -59,10 +59,10 @@ export const REPORT_CSS = `
   .task { font-size: 16px; line-height: 1.65; max-width: 72ch; padding: 2px 0 2px 18px; border-left: 3px solid var(--context); white-space: pre-wrap; overflow-wrap: anywhere; }
 
   /* Hero: task, verdict, scoreboard */
-  .hero { position: relative; margin: 0 -64px 52px; padding: 40px 64px 34px; color: var(--band-ink); background: radial-gradient(900px 420px at 100% 0%, rgba(142, 63, 168, 0.5), transparent 65%), var(--band); }
+  .hero { position: relative; margin: 0 -64px 52px; padding: 40px 64px 34px; color: var(--band-ink); background: radial-gradient(900px 420px at 100% 0%, rgba(47, 91, 216, 0.55), transparent 65%), var(--band); }
   .hero-meta { display: flex; justify-content: space-between; font-size: 13px; color: var(--band-muted); margin-bottom: 44px; }
-  .hero-meta span:first-child { color: var(--gold); font-weight: 600; }
-  .hero-vs { font-size: 15px; color: var(--gold); margin-bottom: 8px; }
+  .hero-meta span:first-child { color: var(--band-label); font-weight: 600; }
+  .hero-vs { font-size: 15px; color: var(--band-label); margin-bottom: 8px; }
   .hero-task { font-family: var(--display); font-size: 46px; line-height: 1.02; font-weight: 800; letter-spacing: -0.035em; font-variation-settings: "opsz" 96; max-width: 22ch; margin-bottom: 14px; text-wrap: balance; }
   .hero-task-rest { font-size: 15px; line-height: 1.6; color: var(--band-muted); max-width: 70ch; white-space: pre-wrap; overflow-wrap: anywhere; }
   .hero-lede { font-family: var(--display); font-size: 30px; line-height: 1.2; font-weight: 500; letter-spacing: -0.02em; max-width: 34ch; margin: 48px 0 40px; padding-top: 28px; border-top: 1px solid var(--band-rule); text-wrap: balance; }
@@ -70,7 +70,7 @@ export const REPORT_CSS = `
   .cell { min-width: 0; padding: 0 18px; border-left: 1px solid var(--band-rule); }
   .cell:first-child { padding-left: 0; border-left: none; }
   .cell-label { font-size: 14px; color: var(--band-muted); margin-bottom: 6px; }
-  .cell-fig { font-family: var(--display); font-size: 74px; line-height: 0.95; font-weight: 800; letter-spacing: -0.05em; font-variation-settings: "opsz" 96; color: var(--gold); margin-bottom: 14px; font-variant-numeric: tabular-nums; }
+  .cell-fig { font-family: var(--display); font-size: 74px; line-height: 0.95; font-weight: 800; letter-spacing: -0.05em; font-variation-settings: "opsz" 96; color: var(--band-ink); margin-bottom: 14px; font-variant-numeric: tabular-nums; }
   .cell-fig.word { font-size: 64px; padding-top: 14px; }
   .cell-fig.better { color: var(--band-better); }
   .cell-fig.worse { color: var(--band-worse); }
@@ -115,9 +115,14 @@ export const REPORT_CSS = `
   @keyframes grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
   @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
   @media (prefers-reduced-motion: reduce) { .seg, .split-total { animation: none; } }
-  .seg-influence, .key-influence { background: var(--context); }
-  .seg-own, .key-own { background: var(--baseline); }
-  .seg-other, .key-other { background: #ddd3dc; }
+  /* Green shades pull the difference down, red shades push it up;
+     strongest for the context's influence, lightest for other work. */
+  .split-neg .seg-influence, .key-influence.down { background: #16833f; }
+  .split-neg .seg-own, .key-own.down { background: #62b07c; }
+  .split-neg .seg-other, .key-other.down { background: #b9ddc4; }
+  .split-pos .seg-influence, .key-influence.up { background: #c42b2b; }
+  .split-pos .seg-own, .key-own.up { background: #e2726b; }
+  .split-pos .seg-other, .key-other.up { background: #f3c3be; }
   .split-zero { position: absolute; left: 50%; top: -4px; bottom: -4px; width: 1px; background: var(--ink); }
   .split-total { position: absolute; top: -7px; bottom: -7px; width: 3px; margin-left: -1px; background: var(--ink); border-radius: 2px; }
   .split-text { font-size: 13px; color: var(--text-muted); line-height: 1.6; }
@@ -163,7 +168,7 @@ export const REPORT_CSS = `
   .bar-tag.better, .bar-tag.worse { color: var(--context); font-weight: 600; }
   .bar-track { flex: 1; height: 20px; }
   .bar-fill { height: 100%; min-width: fit-content; display: flex; align-items: center; padding: 0 8px; font-size: 13px; font-weight: 600; white-space: nowrap; }
-  .bar-fill.baseline { background: #ebe4ea; color: var(--ink); }
+  .bar-fill.baseline { background: #e3e7ee; color: var(--ink); }
   .bar-fill.better { background: var(--context-tint); color: var(--better); box-shadow: inset 3px 0 0 var(--context); }
   .bar-fill.worse { background: var(--context-tint); color: var(--worse); box-shadow: inset 3px 0 0 var(--context); }
 
@@ -218,7 +223,7 @@ export const REPORT_CSS = `
   .diff-summary { display: flex; gap: 16px; font-size: 14px; color: var(--text-muted); margin-bottom: 10px; }
   .diff-added { color: var(--green); font-weight: 600; }
   .diff-removed { color: var(--red); font-weight: 600; }
-  .diff-block { border: 1px solid var(--rule); background: #fdfbfc; overflow: auto; max-height: 600px; }
+  .diff-block { border: 1px solid var(--rule); background: #fbfcfd; overflow: auto; max-height: 600px; }
   .diff-block pre { padding: 12px 0; font-size: 12.5px; line-height: 1.55; tab-size: 4; }
   .diff-block code { white-space: pre; }
   .diff-file { color: var(--ink); font-weight: 600; background: var(--tint); display: inline-block; width: 100%; padding: 2px 0; }

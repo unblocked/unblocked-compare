@@ -435,6 +435,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
     const segs = (neg: boolean) => side(neg).map(([k, v]) => `<span class="seg seg-${k}" style="width: ${((Math.abs(v) / scale) * 100).toFixed(1)}%"></span>`).join("");
     return `<div class="split" aria-hidden="true"><div class="split-neg">${segs(true)}</div><div class="split-pos">${segs(false)}</div><span class="split-zero"></span><span class="split-total" style="left: ${(50 + (r.measured / scale) * 50).toFixed(1)}%"></span></div>`;
   };
+  const dir = (v: number) => (v < 0 ? "down" : "up");
   const resultRow = (label: string, key: keyof Totals, fmt: (n: number) => string) => {
     const e = ce!;
     const infl = pctChange(e.adjustedBaseline[key], e.adjustedUnblocked[key]);
@@ -447,7 +448,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
         <th scope="row">${label}</th>
         <td><span class="fig${cls}">${pctHtml(infl)}</span><span class="range">${fmt(e.adjustedBaseline[key])} to ${fmt(e.adjustedUnblocked[key])}</span></td>
         <td><span class="fig measured${rawCls}">${pctHtml(raw)}</span><span class="range">${fmt(e.baseline[key])} to ${fmt(e.unblocked[key])}</span></td>
-        <td>${splitBar(r)}<div class="split-text"><span>${signed(r.measured, fmt)} measured =</span><span><i class="key key-influence"></i>${signed(r.influence, fmt)} context's influence</span><span><i class="key key-own"></i>${signed(r.ownMistakes, fmt)} agents' own mistakes</span><span><i class="key key-other"></i>${signed(r.other, fmt)} other work</span></div></td>
+        <td>${splitBar(r)}<div class="split-text"><span>${signed(r.measured, fmt)} measured =</span><span><i class="key key-influence ${dir(r.influence)}"></i>${signed(r.influence, fmt)} context's influence</span><span><i class="key key-own ${dir(r.ownMistakes)}"></i>${signed(r.ownMistakes, fmt)} agents' own mistakes</span><span><i class="key key-other ${dir(r.other)}"></i>${signed(r.other, fmt)} other work</span></div></td>
       </tr>`;
   };
   const causeLabel = { context: "context", agent: "agent, not context", environment: "environment" } as const;

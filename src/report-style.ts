@@ -148,6 +148,29 @@ export const REPORT_CSS = `
   .ab-key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
   @media (prefers-reduced-motion: reduce) { .ab-seg { animation: none; } }
 
+  /* Without vs with: plain bars and what made the difference */
+  .cmps { display: flex; flex-direction: column; margin-bottom: 20px; border-top: 2px solid var(--ink); }
+  .cmp { display: grid; grid-template-columns: 110px 1fr 250px; gap: 24px; align-items: center; padding: 22px 0; border-bottom: 1px solid var(--rule); }
+  .cmp-label { font-family: var(--display); font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+  .cmp-bars { display: flex; flex-direction: column; gap: 8px; }
+  .cb-row { display: grid; grid-template-columns: 150px 1fr; align-items: center; gap: 12px; }
+  .cb-name { font-size: 13px; color: var(--text-muted); }
+  .cb-name.ctx { color: var(--context); font-weight: 600; }
+  .cb-track { display: flex; align-items: center; gap: 10px; height: 24px; }
+  .cb-bar { height: 100%; border-radius: 4px; animation: grow 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) both; transform-origin: left center; }
+  .cb-bar.base { background: #c9d0dc; }
+  .cb-bar.ctx { background: var(--context); animation-delay: 0.1s; }
+  .cb-val { font-size: 14px; font-weight: 700; white-space: nowrap; }
+  .cb-val em { font-style: normal; margin-left: 4px; }
+  .cb-val em.better { color: var(--better); }
+  .cb-val em.worse { color: var(--worse); }
+  .why { list-style: none; display: flex; flex-direction: column; gap: 6px; font-size: 14px; line-height: 1.35; }
+  .why li { position: relative; padding-left: 18px; }
+  .why li::before { content: ""; position: absolute; left: 0; top: 0.42em; width: 9px; height: 9px; border-radius: 50%; }
+  .why li.good::before { background: var(--better); }
+  .why li.bad::before { background: var(--worse); }
+  @media (prefers-reduced-motion: reduce) { .cb-bar { animation: none; } }
+
   .points { max-width: 72ch; margin: 0 0 20px 20px; font-size: 16px; line-height: 1.6; }
   .points li { margin-bottom: 6px; padding-left: 4px; }
   .points li::marker { color: var(--context); }
@@ -277,6 +300,8 @@ export const REPORT_CSS = `
     .results tbody th { grid-column: 1 / -1; margin-bottom: 6px; }
     .results td:nth-child(4), .quality-row td { grid-column: 1 / -1; margin-top: 12px; }
     .ab-row { grid-template-columns: 1fr; gap: 2px; }
+    .cmp { grid-template-columns: 1fr; gap: 12px; }
+    .cb-row { grid-template-columns: 1fr; gap: 2px; }
     .hero-grid, .hero-3, .hero-4 { grid-template-columns: 1fr; }
     .comparison-row { grid-template-columns: 1fr; gap: 6px; }
     .bar-tag { width: 90px; }
@@ -285,7 +310,7 @@ export const REPORT_CSS = `
   @media print {
     body { background: #fff; }
     .sheet { box-shadow: none; margin: 0; }
-    .seg, .split-total, .ab-seg { animation: none; }
+    .seg, .split-total, .ab-seg, .cb-bar { animation: none; }
   }
 `;
 

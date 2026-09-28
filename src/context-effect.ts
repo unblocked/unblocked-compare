@@ -89,7 +89,7 @@ export function describeNumbers(e: ContextEffect, label: string): string {
     `${name}: cost ${money(b.costUsd)} -> ${money(u.costUsd)} (${pct(b.costUsd, u.costUsd)}); time ${dur(b.durationMs)} -> ${dur(u.durationMs)} (${pct(b.durationMs, u.durationMs)}); tokens ${tok(b.tokens)} -> ${tok(u.tokens)} (${pct(b.tokens, u.tokens)})`;
   const split = (key: keyof Totals, f: (n: number) => string) => {
     const r = reconcile(e, key);
-    return `${sgn(r.measured, f)} measured = ${sgn(r.influence, f)} context's influence ${sgn(r.ownMistakes, f)} agents' own mistakes ${sgn(r.other, f)} other work`;
+    return `${sgn(r.measured, f)} measured = ${sgn(r.influence, f)} context's influence ${sgn(r.ownMistakes, f)} agents' own choices ${sgn(r.other, f)} other work`;
   };
   const ctx = (arm: Condition) => e.episodes.filter(x => x.arm === arm && x.cause === "context");
   const own = (arm: Condition) => e.episodes.filter(x => x.arm === arm && x.cause !== "context");
@@ -99,8 +99,8 @@ export function describeNumbers(e: ContextEffect, label: string): string {
     line(`CONTEXT'S INFLUENCE (baseline -> baseline + ${label} arm's context episodes - baseline's context episodes)`, e.adjustedBaseline, e.adjustedUnblocked),
     `${label} arm's context episodes total: ${sum(ctx("unblocked"))}`,
     `Baseline's context episodes (work the baseline agent did for lack of the context) total: ${sum(ctx("baseline"))}`,
-    `${label} agent's own mistakes and environment noise ([agent]/[environment] episodes in its arm) total: ${sum(own("unblocked"))}`,
-    `Baseline agent's own mistakes and environment noise total: ${sum(own("baseline"))}`,
+    `${label} agent's own choices and environment noise ([agent]/[environment] episodes in its arm) total: ${sum(own("unblocked"))}`,
+    `Baseline agent's own choices and environment noise total: ${sum(own("baseline"))}`,
     `SPLIT, cost: ${split("costUsd", money)}`,
     `SPLIT, time: ${split("durationMs", dur)}`,
     `SPLIT, tokens: ${split("tokens", tok)}`,
@@ -130,8 +130,9 @@ Who did what, strictly:
 - State the context's influence as what happened, not a hypothetical: "drove cost down by 10%", never "would cut".
 - Episode labels are fixed; follow them, never reinterpret them. A baseline [context] episode is work the baseline agent did for lack of the context: say so. A [agent] or [environment] episode is one the context did not influence, in either arm.
 - Requirements are met or missed by an agent, never by ${label === "Unblocked" ? "Unblocked" : "the context"}: "the agent with ${label === "Unblocked" ? "Unblocked" : "the context"} met both requirements".
-- A MEASURED percentage is the whole difference between the arms. Never attribute a measured percentage to mistakes or to the context; the SPLIT lines say how much of it each part explains.
-- "Agents' own mistakes" in SPLIT is a net figure: the ${label} agent's own mistakes minus the baseline agent's. When it is negative, the baseline agent's own mistakes cost more: say "the baseline agent's own mistakes added $X to the baseline", using the per-arm totals.
+- A MEASURED percentage is the whole difference between the arms. Never attribute a measured percentage to the agents' own choices or to the context; the SPLIT lines say how much of it each part explains.
+- "Agents' own choices" in SPLIT is a net figure: the ${label} agent's own choices minus the baseline agent's. When it is negative, the baseline agent's own choices cost more: say so, using the per-arm totals.
+- Call an [agent] episode a mistake only when its description is an error or the loop fixing one (a failed build, a wrong guess, a lint or test fix loop). Work that built the solution, such as a larger design or more tests, is the agent's own choice, not a mistake; when that arm won on quality, say that choice is what met the requirements.
 - Quote numbers only from NUMBERS, character for character (for example "$0.18", "25s", "60.2k tokens"). Do not convert units, round or add figures together yourself.
 Style example: "${label === "Unblocked" ? "Unblocked's" : "The"} context drove cost down by 10%, time by 2%, and tokens by 12%, but the agent made judgement errors that drove raw numbers up."
 

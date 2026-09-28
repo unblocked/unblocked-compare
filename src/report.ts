@@ -495,7 +495,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
           ${row("&minus; Baseline, core work", k => -e.baseline[k], "", true)}
           ${row("= Measured difference", k => r(k).measured, "total-row", true)}
           ${row("of which: context's influence", k => r(k).influence, "", true)}
-          ${row(`of which: agents' own mistakes (${escapeHtml(L.short)} arm's agent and environment episodes, minus the Baseline's)`, k => r(k).ownMistakes, "", true)}
+          ${row(`of which: agents' own choices (${escapeHtml(L.short)} arm's agent and environment episodes, minus the Baseline's)`, k => r(k).ownMistakes, "", true)}
           ${row("of which: other work (turns no episode covers)", k => r(k).other, "", true)}
         </tbody>
       </table>`;
@@ -1006,7 +1006,7 @@ function tldrLines(result: ComparisonResult): string[] {
   const sg = (n: number, fmt: (n: number) => string) => `${n < 0 ? "-" : "+"}${fmt(Math.abs(n))}`;
   const row = (name: string, raw: [number, number], adj: [number, number], fmt: (n: number) => string) => {
     const r = reconcile(ce, name === "Cost" ? "costUsd" : name === "Time" ? "durationMs" : "tokens");
-    return `  ${padRight(name, 8)}context's influence ${padLeft(pct(adj[0], adj[1]), 5)}  measured ${padLeft(pct(raw[0], raw[1]), 5)} = ${sg(r.influence, fmt)} influence ${sg(r.ownMistakes, fmt)} own mistakes ${sg(r.other, fmt)} other`;
+    return `  ${padRight(name, 8)}context's influence ${padLeft(pct(adj[0], adj[1]), 5)}  measured ${padLeft(pct(raw[0], raw[1]), 5)} = ${sg(r.influence, fmt)} influence ${sg(r.ownMistakes, fmt)} own choices ${sg(r.other, fmt)} other`;
   };
   return [
     "",

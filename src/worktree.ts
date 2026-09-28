@@ -1,3 +1,10 @@
+// Each arm works in its own clone of the repository, not a git worktree. A
+// worktree shares the repository's refs, so an agent could list and
+// cherry-pick the owner's local branches, or another run's commits (on
+// ENG-735 both arms did, copying an existing fix). A `--shared` clone borrows
+// the objects (fast, no copy) but keeps only the base commit: no branches, no
+// remote-tracking refs. `origin` still names the real remote so `gh` works,
+// but pushing is blocked.
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -6,45 +13,73 @@ import { git, tryGit } from "./git.ts";
 
 const WORKTREE_BASE = path.join(os.tmpdir(), "unblocked-compare-wt");
 
+// A push URL that cannot be reached, so `git push` fails instead of publishing.
+export const NO_PUSH_URL = "no-push://unblocked-compare-blocks-pushes";
+
 export function worktreePath(repoPath: string, name: string): string {
   const repoName = path.basename(repoPath);
   return path.join(WORKTREE_BASE, repoName, name);
 }
 
 export function createWorktree(repoPath: string, name: string, branch: string): { path: string; baseSha: string } {
-  const wtPath = worktreePath(repoPath, name);
-  fs.mkdirSync(path.dirname(wtPath), { recursive: true });
-  git(repoPath, ["worktree", "add", "--detach", wtPath, branch]);
-  if (fs.existsSync(path.join(wtPath, ".gitmodules"))) {
-    if (tryGit(wtPath, ["submodule", "update", "--init", "--recursive"], "initialising submodules in worktree") !== null) log(`Initialised submodules in ${name}`);
+  const dir = worktreePath(repoPath, name);
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
+  const baseSha = git(repoPath, ["rev-parse", "--verify", `${branch}^{commit}`]).trim();
+
+  git(path.dirname(dir), ["clone", "--shared", "--no-checkout", "--quiet", repoPath, dir]);
+  // Only the base commit is reachable by name.
+  const refs = git(dir, ["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes"]).split("\n").filter(Boolean);
+  if (refs.length) git(dir, ["update-ref", "--no-deref", "--stdin"], undefined, refs.map(r => `delete ${r}\n`).join(""));
+  git(dir, ["checkout", "--quiet", "--detach", baseSha]);
+
+  const originUrl = tryGit(repoPath, ["remote", "get-url", "origin"], "reading the origin url")?.trim();
+  if (originUrl) {
+    git(dir, ["remote", "set-url", "origin", originUrl]);
+    git(dir, ["config", "remote.origin.pushurl", NO_PUSH_URL]);
+  } else {
+    git(dir, ["remote", "remove", "origin"]);
   }
-  const baseSha = git(wtPath, ["rev-parse", "HEAD"]).trim();
-  return { path: wtPath, baseSha };
+
+  if (fs.existsSync(path.join(dir, ".gitmodules"))) initSubmodules(repoPath, dir, name);
+  return { path: dir, baseSha };
 }
 
-export function removeWorktree(repoPath: string, name: string, refsBefore: Map<string, string> | null, agentCommits: Set<string>): void {
-  const wtPath = worktreePath(repoPath, name);
-  if (tryGit(repoPath, ["worktree", "remove", "--force", wtPath], `removing worktree ${name}`) === null) {
-    tryGit(repoPath, ["worktree", "prune"], "pruning worktrees");
+// Submodules come from the repository's own checked-out copies where it has
+// them (local, hardlinked), not from the network.
+function initSubmodules(repoPath: string, dir: string, name: string): void {
+  const entries = (tryGit(dir, ["config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"], "listing submodules") ?? "").split("\n").filter(Boolean);
+  for (const line of entries) {
+    const [key, subPath] = line.split(/\s+/);
+    const subName = key.replace(/^submodule\./, "").replace(/\.path$/, "");
+    const local = tryGit(path.join(repoPath, subPath), ["rev-parse", "--absolute-git-dir"], `locating submodule ${subPath}`)?.trim();
+    if (local && fs.existsSync(local)) git(dir, ["config", `submodule.${subName}.url`, local]);
   }
-  if (!refsBefore) { log(`Skipping branch cleanup for ${name}: no ref snapshot from run start`); return; }
-  if (agentCommits.size === 0) return;
+  // Local-path submodule URLs need file transport, off by default since git 2.38.
+  if (tryGit(dir, ["-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive", "--quiet"], "initialising submodules") !== null) log(`Initialised submodules in ${name}`);
+}
 
-  const checkedOut = new Set((tryGit(repoPath, ["worktree", "list", "--porcelain"], "listing worktrees") ?? "").split("\n").filter(l => l.startsWith("branch ")).map(l => l.slice(7).trim()));
-  const now = tryGit(repoPath, ["for-each-ref", "--format=%(objectname) %(refname)", "refs/heads"], "listing branches after run") ?? "";
-  for (const line of now.split("\n")) {
-    const sp = line.indexOf(" ");
-    if (sp <= 0) continue;
-    const sha = line.slice(0, sp), ref = line.slice(sp + 1), short = ref.replace(/^refs\/heads\//, "");
-    if (!agentCommits.has(sha)) continue;
-    const before = refsBefore.get(ref);
-    if (before === undefined) {
-      if (tryGit(repoPath, ["branch", "-D", short], `deleting agent-created branch ${short}`) !== null) log(`Deleted agent-created branch ${short} (was ${sha.slice(0, 7)})`);
-    } else if (before !== sha) {
-      if (checkedOut.has(ref)) { log(`Agent moved pre-existing branch ${short} to ${sha.slice(0, 7)}, but it is checked out in another worktree; left as is (pre-run sha ${before.slice(0, 7)})`); continue; }
-      if (tryGit(repoPath, ["update-ref", ref, before, sha], `resetting ${short} to its pre-run sha`) !== null) {
-        log(`Agent moved pre-existing branch ${short} to ${sha.slice(0, 7)}; reset to ${before.slice(0, 7)}. The agent's commit is still reachable by sha for a while.`);
-      }
-    }
+// The clone holds everything the agent did; the repository itself was never
+// touched, so there is nothing to reset there.
+export function removeWorktree(repoPath: string, name: string): void {
+  const dir = worktreePath(repoPath, name);
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch (err) {
+    log(`Could not remove ${dir}: ${(err as Error).message}`);
   }
+}
+
+// Git configuration for every agent process (arms and research agents),
+// passed through the environment so it holds in any directory, including the
+// original repository the simulated engine researches in: a push to any
+// remote URL is rewritten to one that cannot be reached.
+const PUSH_URL_PREFIXES = ["https://", "http://", "ssh://", "git@", "git://"];
+export function noPushEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const start = parseInt(base.GIT_CONFIG_COUNT ?? "0", 10) || 0;
+  const env: NodeJS.ProcessEnv = { ...base, GIT_CONFIG_COUNT: String(start + PUSH_URL_PREFIXES.length) };
+  PUSH_URL_PREFIXES.forEach((prefix, i) => {
+    env[`GIT_CONFIG_KEY_${start + i}`] = `url.${NO_PUSH_URL}/.pushInsteadOf`;
+    env[`GIT_CONFIG_VALUE_${start + i}`] = prefix;
+  });
+  return env;
 }

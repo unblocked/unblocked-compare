@@ -3,16 +3,22 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { ArmResult, ComparisonResult, Condition, Config, DiffStats, ReviewPass, ReviewRound, ReviewSpec, RunResult, TokenUsage, UnblockedCall } from "./types.ts";
-import { createWorktree, removeWorktree } from "./worktree.ts";
+import { createWorktree, noPushEnv, removeWorktree } from "./worktree.ts";
 import { AGENTS } from "./agents/index.ts";
+import { engineEnv, readEngineCalls } from "./engine/shim.ts";
+import { discountEngineTime, ENGINE_CALL_CAP_MS } from "./engine/discount.ts";
+import { parseStreamJson } from "./transcript.ts";
 import { printReport, writeJsonResult, writeHtmlReport, writeBatchSummary } from "./report.ts";
 import { estimateCost, formatCost, formatDiffSummary, formatDuration, log, type CacheWriteTier } from "./util.ts";
 import { git, isAncestor, snapshotRefs, tryGit } from "./git.ts";
 import { attribute } from "./attribution.ts";
 import { applyTieBreaker, assessQuality } from "./quality.ts";
+import { reviseRequirements } from "./revision.ts";
+import { computeContextEffect, writeTldr } from "./context-effect.ts";
 import { assessImpact } from "./impact.ts";
 import { economics } from "./economics.ts";
 import { adjudicateDisputes, applyWaivers, disputedSection, extractRequirements, fixPrompt, reviewDraft } from "./review.ts";
+import { unblockedCommand } from "./unblocked-cli.ts";
 
 export function agentCommits(cwd: string, baseSha: string, refsBefore: Map<string, string> | null): Set<string> {
   const heads = new Set<string>();
@@ -123,7 +129,7 @@ export function extractUnblockedCalls(toolCalls: { name: string; args: Record<st
     const isUbMcp = tc.mcpServer?.toLowerCase().includes("unblocked")
       || tc.name.toLowerCase().includes("unblocked");
     const isUbCli = tc.name === "Bash"
-      && /^unblocked\s+context[_-]/.test((tc.args.command as string) ?? "");
+      && !!unblockedCommand((tc.args.command as string) ?? "");
 
     if (isUbMcp) {
       const tool = tc.name.split(/__|::/).pop() ?? tc.name;
@@ -131,9 +137,9 @@ export function extractUnblockedCalls(toolCalls: { name: string; args: Record<st
       calls.push({ tool, query: query ?? undefined });
     } else if (isUbCli) {
       const cmd = (tc.args.command as string) ?? "";
-      const match = cmd.match(/^unblocked\s+(context[_-]\w+)/);
+      const match = unblockedCommand(cmd);
       if (match) {
-        const tool = match[1];
+        const tool = match.tool;
         const queryFlag = cmd.match(/--query\s+["']?(.+?)["']\s*(?:--|$)/)?.[1];
         const positional = cmd.match(/(?:--effort\s+\w+\s+)?["']([^"']+)["']\s*$/)?.[1]
           ?? cmd.match(/(?:--effort\s+\w+\s+)(\S.+)$/)?.[1];
@@ -150,6 +156,7 @@ const RESEARCH_DISCIPLINE = `How to research, whatever tools you use:
 - A search that returns nothing is not a finding. If a source returns nothing on a question that matters, check a second source before concluding that nothing exists: a code search across the organisation's repositories, the file a comment or ticket points at, a runbook.
 - Do not end your turn while a command you started in the background is still running: wait for it, read its output, and report the result.
 - For a build, test suite or other command that takes more than a minute or so, choose one of two ways to wait, never a third: (a) if you have other useful work ready right now (reading a different file, writing a test for a part you already understand), background the command and do that work, then check its result when you circle back; (b) if you do not, issue ONE command that waits for it to finish (poll in a loop inside that single call, e.g. \`for i in $(seq 1 40); do grep -q EXIT= log && break; sleep 15; done; cat log\`) and treat its return as the answer. Never issue a separate tool call per check (\`tail log\`, again, again): each one is a full turn, so ten checks cost ten times what one wait does, and checking on nothing to do costs the most of all.
+- Do not push, and do not open, comment on or review pull requests or issues: your change stays in this working copy, where it is read from. Commit only if you need to.
 - Your final response is the PR description a reviewer will read: what changed, what you verified and how, and any part of the task you deliberately left out, with the reason. Say where each decisive fact came from, and say plainly when you are inferring.`;
 
 const BASELINE_NUDGE = `IMPORTANT: Do NOT use any Unblocked tools, Unblocked skills, or Unblocked CLI commands. Do NOT call context_research, context_get_urls, or any tool with "unblocked" in its name. Do NOT run the "unblocked" CLI binary. You may use all other tools, MCP servers, plugins, and skills, including code search across the organisation's repositories.
@@ -159,7 +166,7 @@ ${RESEARCH_DISCIPLINE}
 TASK:
 `;
 
-const UNBLOCKED_MCP_NUDGE = `IMPORTANT: Before doing anything else, call the Unblocked context_research MCP tool with a detailed query describing the task (effort: low). This is your FIRST action. Use context_research again (effort: low) at the points below, and context_get_urls to expand on anything it surfaces. You may also use all other tools, MCP servers, plugins, and skills.
+const UNBLOCKED_MCP_NUDGE = `IMPORTANT: Before doing anything else, call the Unblocked context_research MCP tool with a detailed query describing the task (effort: low). This is your FIRST action. Use context_get_urls to expand on anything it surfaces. Call context_research again only when a later question needs context you do not have yet; do not repeat a question it has already answered. You may also use all other tools, MCP servers, plugins, and skills.
 
 ${RESEARCH_DISCIPLINE}
 
@@ -168,7 +175,7 @@ TASK:
 
 const UNBLOCKED_CLI_NUDGE = `IMPORTANT: Before doing anything else, run the Unblocked CLI to research this task. This is your FIRST action:
 unblocked context-research --effort low --query "<detailed query describing the task>"
-Use context-research again (--effort low) at the points below, and context-get-urls to expand on anything it surfaces. You may also use all other tools, MCP servers, plugins, and skills.
+Use context-get-urls to expand on anything it surfaces. Run context-research again only when a later question needs context you do not have yet; do not repeat a question it has already answered. You may also use all other tools, MCP servers, plugins, and skills.
 
 ${RESEARCH_DISCIPLINE}
 
@@ -203,7 +210,22 @@ interface RunContext {
   reviewSpec: ReviewSpec | null;
 }
 
-async function runArm(config: Config, condition: Condition, outDir: string, refsBefore: Map<string, string> | null, ctx: RunContext): Promise<ArmResult> {
+interface ArmWorktree { name: string; path: string; baseSha: string }
+
+// Worktree creation is synchronous and can take a minute on a large repo
+// (submodules). Creating both before either arm starts keeps one arm's
+// setup from stalling the other's event loop mid-run.
+function prepareArmWorktree(config: Config, condition: Condition, ctx: RunContext): ArmWorktree {
+  const name = `${condition}-${randomBytes(4).toString("hex")}`;
+  log(`[${condition}] Creating worktree: ${name}`);
+  const { path: wtPath, baseSha } = createWorktree(config.repo, name, config.branch);
+  ctx.worktreeByArm.set(condition, name);
+  log(`[${condition}] Worktree at: ${wtPath} (base ${baseSha.slice(0, 7)})`);
+  AGENTS[config.agent].prepareWorktree(wtPath, condition, config.cliMode);
+  return { name, path: wtPath, baseSha };
+}
+
+async function runArm(config: Config, condition: Condition, outDir: string, refsBefore: Map<string, string> | null, ctx: RunContext, wt: ArmWorktree): Promise<ArmResult> {
   let nudge: string;
   if (condition === "baseline") {
     nudge = BASELINE_NUDGE;
@@ -212,17 +234,19 @@ async function runArm(config: Config, condition: Condition, outDir: string, refs
   } else {
     nudge = UNBLOCKED_MCP_NUDGE;
   }
+  // Simulated context engine: this arm's `unblocked` is the local research
+  // agent, called by the shim's absolute path.
+  const engine = condition === "unblocked" && config.contextEngine
+    ? engineEnv({ armOutDir: outDir, agent: config.agent, model: config.model, repo: config.repo, engine: config.contextEngine })
+    : undefined;
+  // Every arm runs with pushes blocked; the simulated engine's env adds to it.
+  const env = engine?.env ?? noPushEnv();
+  const engineCommand = engine?.command;
+  if (engine && config.contextEngine) nudge = simulatedEngineNote(config.contextEngine.timeoutSeconds, engine.command) + nudge.replaceAll("\nunblocked context-research", `\n${engine.command} context-research`);
   const prompt = nudge + config.task;
 
-  const suffix = randomBytes(4).toString("hex");
-  const wtName = `${condition}-${suffix}`;
-
-  log(`[${condition}] Creating worktree: ${wtName}`);
-  const { path: wtPath, baseSha } = createWorktree(config.repo, wtName, config.branch);
-  ctx.worktreeByArm.set(condition, wtName);
-  log(`[${condition}] Worktree at: ${wtPath} (base ${baseSha.slice(0, 7)})`);
+  const { path: wtPath, baseSha } = wt;
   const adapter = AGENTS[config.agent];
-  adapter.prepareWorktree(wtPath, condition, config.cliMode);
 
   let spentMs = 0;
   const remainingMs = () => Math.max(60_000, config.timeoutSeconds * 1000 - spentMs);
@@ -237,6 +261,8 @@ async function runArm(config: Config, condition: Condition, outDir: string, refs
     outDir,
     blockUnblocked: condition === "baseline",
     cliMode: config.cliMode,
+    env,
+    engineCommand,
   });
   spentMs += runResult.durationMs;
   log(`[${condition}] Done: ${formatDuration(runResult.durationMs)}, ${runResult.assistantTurns} turns, exit=${runResult.exitCode}${runResult.timedOut ? " (TIMED OUT)" : ""}${runResult.killedReason && !runResult.timedOut ? ` (killed: ${runResult.killedReason})` : ""}`);
@@ -272,7 +298,7 @@ async function runArm(config: Config, condition: Condition, outDir: string, refs
       const fixRun = await adapter.run({
         prompt: (condition === "baseline" ? BASELINE_FIX_PREAMBLE : "") + fixPrompt(round, r),
         worktreePath: wtPath, model: config.model, condition, timeoutMs: remainingMs(), outDir,
-        blockUnblocked: condition === "baseline", cliMode: config.cliMode, resumeSessionId: run.sessionId, priorTranscriptPath: run.jsonlPath, jsonlName: `${condition}.fix${round}.jsonl`,
+        blockUnblocked: condition === "baseline", cliMode: config.cliMode, env, engineCommand, resumeSessionId: run.sessionId, priorTranscriptPath: run.jsonlPath, jsonlName: `${condition}.fix${round}.jsonl`,
       });
       spentMs += fixRun.durationMs;
       log(`[${condition}] Fix pass ${round} done: ${formatDuration(fixRun.durationMs)}, ${fixRun.assistantTurns} msgs, exit=${fixRun.exitCode}${fixRun.killedReason ? ` (killed: ${fixRun.killedReason})` : ""}`);
@@ -301,14 +327,42 @@ async function runArm(config: Config, condition: Condition, outDir: string, refs
   }
 
   const cost = run.totalCostUsd ?? estimateCost(pricingModel(config, run), run.tokenUsage, adapter.cacheWriteTier);
+  const contextEngine = engine ? readEngineCalls(outDir) : undefined;
+  if (engine && contextEngine) {
+    // Simulated research is far slower than the real service: count each call
+    // as at most ENGINE_CALL_CAP_MS, before attribution reads the transcript.
+    const discountedMs = discountEngineTime(run.jsonlPath, engine.command);
+    contextEngine.discountedMs = discountedMs;
+    contextEngine.capMs = ENGINE_CALL_CAP_MS;
+    if (discountedMs) {
+      const reparsed = parseStreamJson(fs.readFileSync(run.jsonlPath, "utf8"), null, true);
+      run = { ...run, durationMs: Math.max(0, run.durationMs - discountedMs), toolCalls: reparsed.toolCalls };
+      log(`[${condition}] Context engine: ${formatDuration(discountedMs)} of research time discounted (each call counts as at most ${formatDuration(ENGINE_CALL_CAP_MS)})`);
+    }
+  }
+  if (contextEngine) log(`[${condition}] Context engine: ${contextEngine.calls.length} research call(s), ${formatCost(contextEngine.costUsd)}, ${formatDuration(contextEngine.durationMs)}${contextEngine.calls.some(c => c.repoModified) ? " — ⚠ a research call modified the repository" : ""}`);
 
-  return { condition, run, diff, diffStats, unblockedCalls, estimatedCost: cost, review };
+  return { condition, run, diff, diffStats, unblockedCalls, estimatedCost: cost, review, ...(contextEngine ? { contextEngine } : {}) };
 }
 
 // The model to price a run at when the agent reports no cost of its own: the
 // model the agent says it ran, else the one it was told to run.
 function pricingModel(config: Config, run: RunResult): string {
   return run.model ?? config.model ?? "";
+}
+
+// The simulated engine's CLI is called by its full path (login shells reorder
+// PATH), and a research pass takes minutes, far slower than the real service;
+// say both, or agents run another `unblocked` or kill it at their shell's
+// default timeout.
+function simulatedEngineNote(timeoutSeconds: number, command: string): string {
+  const minutes = Math.ceil(timeoutSeconds / 60);
+  return `NOTE: the Unblocked CLI for this task is ${command}. Always run it by that full path (\`${command} context-research ...\`, \`${command} context-get-urls ...\`); never run a bare \`unblocked\` command. A research call can take up to ${minutes} minutes: give the command a timeout of at least ${minutes + 1} minutes and wait for it to finish.\n\n`;
+}
+
+// Requirements come from the task, plus the acceptance criteria when given.
+function specSource(config: Config): string {
+  return config.criteria ? `${config.task}\n\nAcceptance criteria:\n${config.criteria}` : config.task;
 }
 
 const BASELINE_FIX_PREAMBLE = "IMPORTANT: as before, do NOT use any Unblocked tools, Unblocked skills, or Unblocked CLI commands.\n\n";
@@ -358,9 +412,14 @@ export async function run(config: Config, outDirOverride?: string, sharedSpec?: 
   if (!refsBefore) throw new Error("Could not snapshot the repository's refs; without it the agent's commits cannot be told from existing history");
   warnIfBehindUpstream(config.repo, config.branch);
   keepMachineAwake();
-  if (config.reviewRounds > 0) {
-    ctx.reviewSpec = sharedSpec ? { ...sharedSpec, adjudications: [], costUsd: 0 } : await extractRequirements(config.task, config.checkerModel);
-    if (!ctx.reviewSpec) throw new Error("Review: could not extract the task's requirements; not running the arms without a shared review standard");
+  // A fixed requirement list whenever the analysis runs: the revision pass and
+  // the judge grade against it.
+  if (config.reviewRounds > 0 || config.criteria || config.analystModel) {
+    ctx.reviewSpec = sharedSpec ? { ...sharedSpec, adjudications: [], costUsd: 0 } : (await extractRequirements(specSource(config), config.checkerModel)) ?? null;
+    // Only --review and --criteria need the list before the arms run; without
+    // them the judge extracts its own, as it did before every run had one.
+    if (!ctx.reviewSpec && (config.reviewRounds > 0 || config.criteria)) throw new Error("Review: could not extract the task's requirements; not running the arms without a shared review standard");
+    if (!ctx.reviewSpec) log("Requirements: extraction failed; the judge will extract its own and the revision pass is skipped");
   }
   const reviewSpec = ctx.reviewSpec;
 
@@ -368,15 +427,17 @@ export async function run(config: Config, outDirOverride?: string, sharedSpec?: 
   let unblocked: ArmResult;
 
   try {
+    const baselineWt = prepareArmWorktree(config, "baseline", ctx);
+    const unblockedWt = prepareArmWorktree(config, "unblocked", ctx);
     [baseline, unblocked] = await Promise.all([
-      runArm(config, "baseline", baselineDir, refsBefore, ctx),
-      runArm(config, "unblocked", unblockedDir, refsBefore, ctx),
+      runArm(config, "baseline", baselineDir, refsBefore, ctx, baselineWt),
+      runArm(config, "unblocked", unblockedDir, refsBefore, ctx, unblockedWt),
     ]);
   } finally {
     if (!config.keepWorktrees) {
       log("Cleaning up worktrees...");
-      for (const [condition, name] of ctx.worktreeByArm) {
-        removeWorktree(config.repo, name, refsBefore, ctx.agentCommitsByArm.get(condition) ?? new Set());
+      for (const [, name] of ctx.worktreeByArm) {
+        removeWorktree(config.repo, name);
       }
     }
   }
@@ -395,6 +456,8 @@ export async function run(config: Config, outDirOverride?: string, sharedSpec?: 
 
   const result: ComparisonResult = {
     agent: config.agent,
+    ...(config.contextEngine ? { contextEngine: "simulated" as const } : {}),
+    ...(config.criteria ? { criteria: config.criteria } : {}),
     repo: config.repo,
     task: config.task,
     branch: config.branch,
@@ -410,18 +473,28 @@ export async function run(config: Config, outDirOverride?: string, sharedSpec?: 
   const killed = [baseline, unblocked].filter(a => a.run.killedReason);
   if (killed.length) log(`⚠ ${killed.map(a => `${a.condition} was killed (${a.run.killedReason})`).join("; ")}: no quality or impact verdict for an unfinished comparison`);
   if (config.analystModel && !killed.length) {
+    if (result.reviewSpec) {
+      const rev = await reviseRequirements(result, config.judgeModel);
+      if (rev) { result.reviewSpec.revisions = rev.revisions; result.reviewSpec.revisionCostUsd = rev.costUsd; }
+    }
     const q = await assessQuality(result, config.judgeModel);
     if (q) result.quality = q;
     result.economics = economics(result);
     if (q) { const im = await assessImpact(result, config.judgeModel); if (im) result.impact = im; }
     else log("Impact: skipped, no quality verdict to assess against");
     applyTieBreaker(result);
+    const effect = computeContextEffect(result);
+    if (effect) {
+      const tldr = await writeTldr(result, effect, config.contextEngine ? "Simulated Context" : "Unblocked", config.checkerModel);
+      if (tldr) effect.tldr = tldr;
+      result.contextEffect = effect;
+    }
     if (result.quality?.verdict.tieBreaker?.applied) log(`Verdict: blinded tie → Unblocked by the tie-breaker (${result.quality.verdict.tieBreaker.reason})`);
   } else if (config.analystModel) {
     result.economics = economics(result);
   }
   const reviewCost = (a: ArmResult) => (a.review?.passes ?? []).reduce((s, p) => s + p.reviewCostUsd, 0);
-  result.analysisCostUsd = (baseline.attribution?.analystCostUsd ?? 0) + (unblocked.attribution?.analystCostUsd ?? 0) + (result.quality?.judgeCostUsd ?? 0) + (result.impact?.costUsd ?? 0) + reviewCost(baseline) + reviewCost(unblocked) + (reviewSpec?.costUsd ?? 0);
+  result.analysisCostUsd = (baseline.attribution?.analystCostUsd ?? 0) + (unblocked.attribution?.analystCostUsd ?? 0) + (result.quality?.judgeCostUsd ?? 0) + (result.impact?.costUsd ?? 0) + reviewCost(baseline) + reviewCost(unblocked) + (reviewSpec?.costUsd ?? 0) + (reviewSpec?.revisionCostUsd ?? 0) + (result.contextEffect?.tldr?.costUsd ?? 0);
   log(`Experiment wall time ${formatDuration(Date.now() - startTime)} incl. analysis`);
 
   printReport(result);
@@ -453,11 +526,13 @@ export async function runBatch(config: Config): Promise<{ batchDir: string; resu
   fs.mkdirSync(batchDir, { recursive: true });
   log(`Batch: ${config.repeat} repeats, ${config.concurrency} at a time → ${batchDir}`);
   let sharedSpec: ReviewSpec | undefined;
-  if (config.reviewRounds > 0) {
-    const spec = await extractRequirements(config.task, config.checkerModel);
-    if (!spec) throw new Error("Review: could not extract the task's requirements; not running the batch without a shared review standard");
-    sharedSpec = spec;
-    fs.writeFileSync(path.join(batchDir, "requirements.json"), JSON.stringify(spec, null, 2));
+  if (config.reviewRounds > 0 || config.criteria || config.analystModel) {
+    const spec = await extractRequirements(specSource(config), config.checkerModel);
+    if (!spec && (config.reviewRounds > 0 || config.criteria)) throw new Error("Review: could not extract the task's requirements; not running the batch without a shared review standard");
+    if (spec) {
+      sharedSpec = spec;
+      fs.writeFileSync(path.join(batchDir, "requirements.json"), JSON.stringify(spec, null, 2));
+    }
   }
   const results: (ComparisonResult | null)[] = new Array(config.repeat).fill(null);
   let next = 0;

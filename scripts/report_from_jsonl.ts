@@ -12,9 +12,13 @@ import { parseStreamJson, type SessionCumulative } from "../src/transcript.ts";
 import { printReport, writeHtmlReport, writeJsonResult } from "../src/report.ts";
 import { estimateCost } from "../src/util.ts";
 import { AGENTS } from "../src/agents/index.ts";
+import { discountEngineTime, ENGINE_CALL_CAP_MS } from "../src/engine/discount.ts";
 import { attribute, buildWalk, rollup } from "../src/attribution.ts";
 import { applyTieBreaker, assessQuality } from "../src/quality.ts";
 import { assessImpact } from "../src/impact.ts";
+import { reviseRequirements } from "../src/revision.ts";
+import { computeContextEffect, writeTldr } from "../src/context-effect.ts";
+import { extractRequirements } from "../src/review.ts";
 import { economics } from "../src/economics.ts";
 import { extractUnblockedCalls } from "../src/runner.ts";
 import type { ArmResult, ComparisonResult, Condition, UnblockedCall } from "../src/types.ts";
@@ -82,6 +86,7 @@ function arm(condition: Condition, file: string, model: string, orig?: ArmResult
     estimatedCost: cost,
     attribution: orig?.attribution,
     review: orig?.review ? reparseReview(orig.review, file, model) : undefined,
+    ...(orig?.contextEngine ? { contextEngine: orig.contextEngine } : {}),
   };
 }
 
@@ -124,6 +129,18 @@ const tier = AGENTS[orig?.agent ?? "claude"].cacheWriteTier;
 const branch = orig?.branch ?? branchArg ?? "(not recorded in transcripts)";
 const task = orig?.task ?? (taskArg.join(" ") || "(task not recorded in transcripts)");
 const repo = orig?.repo ?? repoFromCwd(init.cwd) ?? "(from transcripts)";
+// A simulated engine's research time counts as at most ENGINE_CALL_CAP_MS per
+// call (idempotent: an already-adjusted transcript has nothing left to remove).
+if (orig?.contextEngine === "simulated" && orig.unblocked.contextEngine) {
+  // Start from the unadjusted transcript when an earlier run kept one, so the
+  // discount is computed afresh rather than found already applied.
+  const unadjusted = ubFile.replace(/\.jsonl$/, ".unadjusted.jsonl");
+  if (fs.existsSync(unadjusted)) fs.copyFileSync(unadjusted, ubFile);
+  const removed = discountEngineTime(ubFile);
+  orig.unblocked.contextEngine.discountedMs = removed;
+  orig.unblocked.contextEngine.capMs = ENGINE_CALL_CAP_MS;
+  if (removed) console.error(`[unblocked] discounted ${Math.round(removed / 1000)}s of simulated research time`);
+}
 const baseline = arm("baseline", baseFile, model, orig?.baseline);
 const unblocked = arm("unblocked", ubFile, model, orig?.unblocked);
 for (const a of [baseline, unblocked]) {
@@ -140,6 +157,8 @@ for (const a of [baseline, unblocked]) {
 
 const result: ComparisonResult = {
   ...(orig?.agent ? { agent: orig.agent } : {}),
+  ...(orig?.contextEngine ? { contextEngine: orig.contextEngine } : {}),
+  ...(orig?.criteria ? { criteria: orig.criteria } : {}),
   repo,
   task,
   branch,
@@ -153,7 +172,16 @@ const result: ComparisonResult = {
 
 const killed = [baseline, unblocked].filter(a => a.run.killedReason);
 if (killed.length) console.error(`⚠ ${killed.map(a => `${a.condition} was killed (${a.run.killedReason})`).join("; ")}: judge and impact are not re-run for an unfinished comparison`);
-if (judgeModel && !killed.length) result.quality = (await assessQuality(result, judgeModel)) ?? orig?.quality;
+if (judgeModel && !killed.length) {
+  // Re-judging runs the revision pass first, on a fixed requirement list
+  // (extracted now for runs made before every run had one).
+  result.reviewSpec ??= (await extractRequirements(result.criteria ? `${task}\n\nAcceptance criteria:\n${result.criteria}` : task, "sonnet")) ?? undefined;
+  if (result.reviewSpec) {
+    const rev = await reviseRequirements(result, judgeModel);
+    if (rev) { result.reviewSpec.revisions = rev.revisions; result.reviewSpec.revisionCostUsd = rev.costUsd; }
+  }
+  result.quality = (await assessQuality(result, judgeModel)) ?? orig?.quality;
+}
 else if (orig?.quality) result.quality = orig.quality;
 
 result.economics = economics(result);
@@ -162,10 +190,22 @@ else if (orig?.impact) result.impact = orig.impact;
 
 applyTieBreaker(result);
 
-const reviewCost = (a: ArmResult) => (a.review?.passes ?? []).reduce((s, p) => s + p.reviewCostUsd, 0);
-result.analysisCostUsd = (baseline.attribution?.analystCostUsd ?? 0) + (unblocked.attribution?.analystCostUsd ?? 0) + (result.quality?.judgeCostUsd ?? 0) + (result.impact?.costUsd ?? 0) + reviewCost(baseline) + reviewCost(unblocked) + (result.reviewSpec?.costUsd ?? 0);
+// Recompute the context effect whenever there are episodes (from a fresh
+// impact pass or the run's own), and rewrite the TL;DR from it (cheap).
+const effect = computeContextEffect(result);
+if (effect) {
+  const tldr = await writeTldr(result, effect, result.contextEngine === "simulated" ? "Simulated Context" : "Unblocked", "sonnet");
+  if (tldr) effect.tldr = tldr;
+  result.contextEffect = effect;
+} else if (orig?.contextEffect) result.contextEffect = orig.contextEffect;
 
-const outDir = path.join(process.cwd(), "results", "regenerated");
+const reviewCost = (a: ArmResult) => (a.review?.passes ?? []).reduce((s, p) => s + p.reviewCostUsd, 0);
+result.analysisCostUsd = (baseline.attribution?.analystCostUsd ?? 0) + (unblocked.attribution?.analystCostUsd ?? 0) + (result.quality?.judgeCostUsd ?? 0) + (result.impact?.costUsd ?? 0) + reviewCost(baseline) + reviewCost(unblocked) + (result.reviewSpec?.costUsd ?? 0) + (result.reviewSpec?.revisionCostUsd ?? 0) + (result.contextEffect?.tldr?.costUsd ?? 0);
+
+// Next to the run it regenerates, when given its result.json.
+// (re-rendering a regenerated result writes back into its own folder).
+const resultDir = thirdArg?.endsWith(".json") ? path.dirname(path.resolve(thirdArg)) : null;
+const outDir = resultDir ? (path.basename(resultDir) === "regenerated" ? resultDir : path.join(resultDir, "regenerated")) : path.join(process.cwd(), "results", "regenerated");
 fs.mkdirSync(outDir, { recursive: true });
 printReport(result);
 writeJsonResult(result, outDir);

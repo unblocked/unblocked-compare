@@ -17,6 +17,16 @@ export interface AgentRunOpts {
   resumeSessionId?: string;
   priorTranscriptPath?: string;
   jsonlName?: string;
+  // Environment for the agent process (e.g. PATH with the simulated engine's
+  // `unblocked` first). Defaults to the harness's own.
+  env?: NodeJS.ProcessEnv;
+  // Research runs (the simulated context engine): extra system instructions,
+  // and no file-editing tools.
+  appendSystemPrompt?: string;
+  readOnly?: boolean;
+  // Simulated context engine: the shim's absolute path. Any other `unblocked`
+  // the arm runs is the real service, and the run is killed.
+  engineCommand?: string;
 }
 
 export interface Agent {

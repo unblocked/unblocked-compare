@@ -52,7 +52,7 @@ const tsOf = (e: { timestamp?: unknown }): number => typeof e.timestamp === "str
 
 export function buildWalk(jsonl: string, totalCostUsd: number | null): WalkTurn[] {
   const events = jsonl.split("\n").filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-  interface Row extends WalkTurn { id: string; rawCost: number; chars: number; thinkingEst: number; usage: Record<string, number>; cache1h: number; model: string; lastBlockMs: number; lastResultMs: number; segmentStartMs: number; nestedOutput: number; cliTurn: number; wakes: boolean; endMs: number }
+  interface Row extends WalkTurn { id: string; rawCost: number; chars: number; thinkingEst: number; usage: Record<string, number>; cache1h: number; model: string; lastBlockMs: number; lastResultMs: number; segmentStartMs: number; nestedOutput: number; cliTurn: number; wakes: boolean; endMs: number; ctx: number }
   const rows: Row[] = [];
   const byId = new Map<string, Row>();
   const pending = new Map<string, { tool: WalkTool; row: Row }>();
@@ -62,6 +62,9 @@ export function buildWalk(jsonl: string, totalCostUsd: number | null): WalkTurn[
   const totalOutput = parsed.tokenUsage.outputTokens;
   const totalThinking = Object.values(parsed.tokenUsage.byModel ?? {}).reduce((a, m) => a + (m.thinkingTokens ?? 0), 0);
   let pendingThinking = 0;
+  // Transcript characters returned by tools so far: with the messages' own
+  // characters, a message's context size, for apportioning input-side tokens.
+  let resultChars = 0;
   let firstTs = NaN;
   let segmentStartMs = NaN;
   let awaitingFirstEvent = false;
@@ -133,6 +136,7 @@ export function buildWalk(jsonl: string, totalCostUsd: number | null): WalkTurn[
           rawCost: 0, chars: 0, thinkingEst: pendingThinking, usage: u, cache1h: u.cache_creation?.ephemeral_1h_input_tokens ?? 0, nestedOutput: 0,
           model: typeof e.message?.model === "string" ? e.message.model : "opus",
           lastBlockMs: NaN, lastResultMs: NaN, segmentStartMs, cliTurn, wakes: afterResult && rowsInSegment > 0, endMs: NaN,
+          ctx: resultChars + rows.reduce((a, r) => a + r.chars, 0),
         };
         afterResult = false; rowsInSegment++;
         pendingThinking = 0;
@@ -158,6 +162,7 @@ export function buildWalk(jsonl: string, totalCostUsd: number | null): WalkTurn[
         if (!Number.isNaN(t)) p.row.lastResultMs = Number.isNaN(p.row.lastResultMs) ? t : Math.max(p.row.lastResultMs, t);
         const body = Array.isArray(block.content) ? block.content.map((c: { text?: string }) => c.text ?? "").join(" ") : String(block.content ?? "");
         p.tool.result = (block.is_error ? "[ERROR] " : "") + resultExcerpt(p.tool.name, p.tool.args, body);
+        resultChars += body.length;
       }
     }
   }
@@ -206,6 +211,8 @@ export function buildWalk(jsonl: string, totalCostUsd: number | null): WalkTurn[
     r.outputTokens = Math.round(think + vis);
   }
 
+  apportionInputSide(rows, parsed.tokenUsage);
+
   for (const r of rows) {
     r.text = r.text.trim();
     const price = priceFor(r.model);
@@ -217,7 +224,30 @@ export function buildWalk(jsonl: string, totalCostUsd: number | null): WalkTurn[
   const rawSum = rows.reduce((a, r) => a + r.rawCost, 0);
   const scale = totalCostUsd && rawSum > 0 ? totalCostUsd / rawSum : 1;
   for (const r of rows) r.costUsd = r.rawCost * scale;
-  return rows.map(({ id: _id, rawCost: _rc, chars: _c, thinkingEst: _te, usage: _u, cache1h: _h, model: _m, lastBlockMs: _lb, lastResultMs: _lr, segmentStartMs: _ss, nestedOutput: _no, cliTurn: _ct, wakes: _w, endMs: _e, ...t }) => t);
+  return rows.map(({ id: _id, rawCost: _rc, chars: _c, thinkingEst: _te, usage: _u, cache1h: _h, model: _m, lastBlockMs: _lb, lastResultMs: _lr, segmentStartMs: _ss, nestedOutput: _no, cliTurn: _ct, wakes: _w, endMs: _e, ctx: _x, ...t }) => t);
+}
+
+// Cursor and Codex report input, cache-read and cache-write tokens per session,
+// not per message. Split the totals across messages by their context size:
+// each message resends a fixed part (system prompt, tools) plus the
+// transcript so far, estimated as base + ctx/4 tokens with base fitted so the
+// parts add up to the reported total. Estimated, like the output split.
+function apportionInputSide(rows: { ctx: number; inputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; usage: Record<string, number> }[], total: { inputTokens: number; cacheReadTokens: number; cacheCreationTokens: number }): void {
+  if (!rows.length || rows.some(r => r.inputTokens || r.cacheReadTokens || r.cacheWriteTokens)) return;
+  const inputSide = total.inputTokens + total.cacheReadTokens + total.cacheCreationTokens;
+  if (inputSide <= 0) return;
+  const transcript = rows.map(r => r.ctx / 4);
+  const sum = transcript.reduce((a, t) => a + t, 0);
+  const base = Math.max(0, (inputSide - sum) / rows.length);
+  const weights = transcript.map(t => base + t);
+  const weightSum = weights.reduce((a, w) => a + w, 0) || 1;
+  rows.forEach((r, i) => {
+    const share = weights[i] / weightSum;
+    r.inputTokens = Math.round(total.inputTokens * share);
+    r.cacheReadTokens = Math.round(total.cacheReadTokens * share);
+    r.cacheWriteTokens = Math.round(total.cacheCreationTokens * share);
+    r.usage = { ...r.usage, input_tokens: r.inputTokens, cache_read_input_tokens: r.cacheReadTokens, cache_creation_input_tokens: r.cacheWriteTokens };
+  });
 }
 
 function renderWalk(walk: WalkTurn[]): string {

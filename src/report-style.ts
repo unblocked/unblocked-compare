@@ -157,11 +157,12 @@ export const REPORT_CSS = `
   .wf-name { color: var(--text-muted); }
   .wf-row.strong .wf-name { color: var(--ink); font-weight: 700; }
   .wf-track { position: relative; height: 22px; }
-  .wf-bar { position: absolute; top: 0; bottom: 0; border-radius: 3px; animation: fade 0.5s ease-out both; }
+  .wf-bar { position: absolute; top: 0; bottom: 0; min-width: 3px; border-radius: 3px; animation: fade 0.5s ease-out both; }
   .wf-bar.base { background: #c9d0dc; }
   .wf-bar.ctx { background: var(--context); }
   .wf-bar.down { background: #2e9e57; }
   .wf-bar.up { background: #d9463f; }
+  .wf-row.strong .wf-bar.up { background: var(--worse); }
   .wf-row.strong .wf-bar.down { background: var(--better); }
   .wf-row:nth-child(2) .wf-bar { animation-delay: 0.1s; } .wf-row:nth-child(3) .wf-bar { animation-delay: 0.2s; }
   .wf-row:nth-child(4) .wf-bar { animation-delay: 0.3s; } .wf-row:nth-child(5) .wf-bar { animation-delay: 0.4s; }

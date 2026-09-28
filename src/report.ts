@@ -442,7 +442,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
     const steps: [string, string, number, boolean][] = ([
       [`${ctxName} saved`, `${ctxName} added`, r.influence, true],
       ["Agent's own choices saved", "Agent's own choices added", r.ownMistakes + r.other, false],
-    ] as [string, string, number, boolean][]).filter(([, , v]) => !small(v));
+    ] as [string, string, number, boolean][]).filter(([, , v, isCtx]) => isCtx || !small(v));
     let run = bv, peak = bv;
     for (const [, , v] of steps) { run += v; peak = Math.max(peak, run); }
     const max = Math.max(peak, uv) || 1;
@@ -454,6 +454,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
     run = bv;
     const stepRows = steps.map(([saved, added, v, isCtx]) => {
       const from = run; run += v;
+      if (isCtx && v === 0) return row(`${ctxName} made no difference`, "none", from, run, fmt(0), true);
       return row(`${v < 0 ? saved : added}${isCtx ? ` (${pctChange(bv, bv + v).replace(/^[-+]/, "")})` : ""}`, v < 0 ? "down" : "up", from, run, `${v < 0 ? "&minus;" : "+"}${fmt(Math.abs(v))}`, isCtx);
     }).join("");
     return `

@@ -67,6 +67,18 @@ describe("codex translator", () => {
   });
 });
 
+test("codex: an item reported done while a command runs is stamped at the command's start", () => {
+  const p = parseStreamJson(canonical(codexTranslator(undefined, new Map()), [
+    { type: "thread.started", thread_id: "t" }, { type: "turn.started" },
+    { type: "item.started", item: { id: "c", type: "command_execution", command: "./gradlew build" } },
+    { type: "item.completed", item: { id: "f", type: "file_change", changes: [{ path: "/wt/a.kt", kind: "update" }], status: "completed" } },
+    { type: "item.completed", item: { id: "c", type: "command_execution", command: "./gradlew build", aggregated_output: "", exit_code: 0 } },
+  ]), null, true);
+  // canonical() spaces events 1s apart: the file change arrives 1s after the
+  // command starts but is stamped at its start.
+  expect(p.toolCalls.map(t => t.timestamp)).toEqual([p.toolCalls[0].timestamp, p.toolCalls[0].timestamp]);
+});
+
 describe("codex helpers", () => {
   test("unwrapShell", () => {
     expect(unwrapShell("/bin/zsh -lc 'cat a.txt'")).toBe("cat a.txt");

@@ -1,4 +1,6 @@
 import type { AgentName } from "./agents/types.ts";
+import type { ContextEngineConfig, EngineSummary } from "./engine/shim.ts";
+import type { ContextEffect } from "./context-effect.ts";
 
 export interface TokenUsage {
   inputTokens: number;
@@ -106,6 +108,8 @@ export type Met = "met" | "partial" | "unmet";
 export interface QualityRequirement {
   index?: number;
   requirement: string;
+  // Set when the revision pass restated this requirement: the task's wording.
+  revisedFrom?: string;
   baseline: { status: Met; evidence: string };
   unblocked: { status: Met; evidence: string };
 }
@@ -152,6 +156,9 @@ export interface EconomicsBreakdown {
   time: { deltaMs: number; modelDeltaMs: number; toolDeltaMs: number; toolWaitDelta: Record<string, number> };
 }
 
+export type EpisodeCause = "context" | "agent" | "environment";
+export interface ImpactEpisode { arm: Condition; fromTurn: number; toTurn: number; cause: EpisodeCause; what: string }
+
 export interface ContextImpact {
   model: string;
   costUsd: number;
@@ -171,6 +178,10 @@ export interface ContextImpact {
     explanation: string;
   };
   economics: { cost: string; time: string; tokens: string };
+  // Stretches of work that make the arms differ, and what caused each: the
+  // research context, or a confounder (agent behaviour unrelated to the
+  // context, or the environment). Summed in context-effect.ts.
+  episodes?: ImpactEpisode[];
 }
 
 export interface ReviewComment { file: string; severity: "must-fix" | "should-fix" | "nit"; comment: string }
@@ -178,7 +189,10 @@ export interface ReviewComment { file: string; severity: "must-fix" | "should-fi
 export interface ReviewRequirement { index?: number; requirement: string; status: "met" | "partial" | "unmet" | "waived"; note: string }
 
 export interface ReviewAdjudication { index: number; waived: boolean; excludes?: string; reason: string; disputedBy: Condition; round: number }
-export interface ReviewSpec { model: string; costUsd: number; requirements: string[]; adjudications: ReviewAdjudication[] }
+// A requirement restated to the team's intent, from evidence an agent found
+// (see revision.ts). Applies to both agents.
+export interface RequirementRevision { index: number; revised: string; reason: string; quote: string; foundBy: Condition }
+export interface ReviewSpec { model: string; costUsd: number; requirements: string[]; adjudications: ReviewAdjudication[]; revisions?: RequirementRevision[]; revisionCostUsd?: number }
 
 export interface ReviewPass {
   round: number;
@@ -210,10 +224,15 @@ export interface ArmResult {
   estimatedCost: number;
   attribution?: Attribution;
   review?: ReviewRound;
+  // Simulated context engine: the research calls behind this arm's `unblocked`.
+  contextEngine?: EngineSummary;
 }
 
 export interface ComparisonResult {
   agent?: AgentName;
+  // "simulated": the Unblocked arm's `unblocked` CLI was the simulated engine.
+  contextEngine?: "unblocked" | "simulated";
+  criteria?: string;
   repo: string;
   task: string;
   branch: string;
@@ -227,6 +246,8 @@ export interface ComparisonResult {
   quality?: QualityAssessment;
   impact?: ContextImpact;
   economics?: EconomicsBreakdown;
+  // Cost, time and tokens with confounders removed, and the report's TL;DR.
+  contextEffect?: ContextEffect;
 }
 
 export interface Config {
@@ -235,6 +256,11 @@ export interface Config {
   task: string;
   // Undefined: the agent CLI's own configured default.
   model?: string;
+  // Acceptance criteria: with them, the requirement list comes from task +
+  // criteria and is used by the checker and judge even without --review.
+  criteria?: string;
+  // Set: the Unblocked arm uses the simulated context engine (implies CLI mode).
+  contextEngine?: ContextEngineConfig;
   timeoutSeconds: number;
   branch: string;
   keepWorktrees: boolean;

@@ -44,7 +44,7 @@ function wrap(text: string, width: number): string[] {
   return out;
 }
 
-function toolCategory(tc: ToolCall): string {
+export function toolCategory(tc: ToolCall): string {
   if (tc.isMcp) {
     return tc.mcpServer?.toLowerCase().includes("unblocked") ? "Unblocked" : `MCP:${tc.mcpServer}`;
   }
@@ -146,7 +146,7 @@ function slowestTools(toolCalls: ToolCall[], n: number): ToolCall[] {
     .slice(0, n);
 }
 
-function toolLabel(tc: ToolCall): string {
+export function toolLabel(tc: ToolCall): string {
   if (tc.name === "Bash") return `Bash: ${((tc.args.command as string) ?? "").replace(/\s+/g, " ").slice(0, 90)}`;
   if (tc.isMcp) return `${toolCategory(tc)}: ${((tc.args.query as string) ?? (tc.args.url as string) ?? "").slice(0, 80)}`;
   const fp = (tc.args.file_path as string) ?? "";

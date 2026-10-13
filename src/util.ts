@@ -7,8 +7,10 @@ export function formatDuration(ms: number): string {
   return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
 }
 
+// Cents once a figure reaches ten cents; smaller figures keep four places so
+// a cheap call does not read as $0.00.
 export function formatCost(usd: number): string {
-  return `$${usd.toFixed(4)}`;
+  return `$${usd.toFixed(Math.abs(usd) >= 0.1 ? 2 : 4)}`;
 }
 
 export function formatTokens(n: number): string {
@@ -141,10 +143,9 @@ export function totalTokens(u: TokenUsageLike): number {
   return effectiveInputTokens(u) + u.outputTokens;
 }
 
-// Headline token metric for reports: fresh input + output only. Cache reads
-// (10% of input rate) and cache writes (125%) are billed at different rates,
-// so lumping them in makes token counts move independently of cost (e.g.
-// "more tokens but cheaper"). Reports surface each cache class separately.
+// Fresh input + output, for the console's per-model rows, which show cache
+// reads beside it. The reports' headline token figure is every token
+// (totalTokens), matching the Summary.
 export function uncachedTokens(u: TokenUsageLike): number {
   return u.inputTokens + u.outputTokens;
 }

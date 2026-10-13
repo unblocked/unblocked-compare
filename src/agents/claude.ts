@@ -34,6 +34,8 @@ export const claude: Agent = {
       for (const tool of UNBLOCKED_MCP_TOOLS) args.push("--disallowed-tools", tool);
     }
     if (opts.blockUnblocked) args.push("--disallowed-tools", "Bash(unblocked *)");
+    if (opts.readOnly) for (const tool of ["Edit", "Write", "MultiEdit", "NotebookEdit"]) args.push("--disallowed-tools", tool);
+    if (opts.appendSystemPrompt) args.push("--append-system-prompt", opts.appendSystemPrompt);
     return runSession({ ...opts, binary: BINARY, args, translator: identity(), keepRaw: false });
   },
 };

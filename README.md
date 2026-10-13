@@ -5,7 +5,7 @@ Two tools for measuring what [Unblocked](https://getunblocked.com) adds to the c
 | Command | Question it answers |
 |---|---|
 | `bun run compare` | Does the agent do the task better, faster or cheaper **with the Unblocked tools** than without? Same agent, same prompt, one arm can call Unblocked. |
-| `bun run simulate` | Does **pre-gathered context** help? A baseline plans and implements from the task alone; the other arm first runs a research pass that builds a context briefing, then plans and implements from it. Scored against acceptance criteria. See [Context engine simulator](#context-engine-simulator). |
+| `bun run simulate` | The same comparison, with Unblocked replaced by a **simulated context engine**: a local research agent with the team's MCP servers answers each `unblocked context-research` call. See [Context engine simulator](#context-engine-simulator). |
 
 ## Compare
 
@@ -21,18 +21,20 @@ Supported agents (`--agent`):
 
 ### How it works
 
-1. Creates two isolated git worktrees from the same branch
+1. Creates two isolated copies of the repository at the same commit: `git clone --shared` (objects borrowed, nothing copied) with every branch and remote-tracking ref removed, so an agent cannot find local work in progress or another run's commits. Submodules come from the repository's local copies. Pushing is blocked (see [Safety](#safety))
 2. Runs the agent in parallel on both:
    - **Baseline**: all MCP servers and tools available *except* Unblocked (see [How blocking works](#how-blocking-works))
-   - **Unblocked**: all MCP servers and tools available, with a nudge to call `context_research` first and throughout
+   - **Unblocked**: all MCP servers and tools available, with a nudge to call `context_research` first, and again only when a later question needs context it doesn't have yet
    - Both arms get the same research and reporting instructions; only the tool availability differs
 3. Captures diffs, token usage, cost, tool calls, and timing from both runs. Each agent's event stream is translated into one canonical transcript (Claude Code's stream-json), so every analysis below works the same for every agent
-4. With `--review`: extracts one requirement list from the task, checks each arm's diff against it, and resumes the arm's session for a fix pass until every requirement is met or the round cap is reached. A requirement waived on one arm's dispute is waived for both.
+4. Extracts one requirement list from the task (and `--criteria`, for `simulate`) before the arms start. With `--review`, it checks each arm's diff against the list and resumes the arm's session for a fix pass until every requirement is met or the round cap is reached. A requirement waived on one arm's dispute is waived for both.
 5. Analyses the pair:
    - **Attribution**: labels each API message as work, verification or housekeeping, so cost and time can be reported for core task work
+   - **Requirement revision** (blinded): when an arm's tool results (research, `gh`, MCP, git history) quote a team decision that changes a requirement, the requirement is restated to the team's intent for both arms. The harness checks the quote is really in that arm's tool results; an agent's own claim revises nothing. This keeps the judge from marking an arm down for finding what the team actually wants
    - **Quality judge** (blinded, arms presented in random order): requirements met, then introduced defects, then material hygiene, else a tie
-   - **Context impact** (un-blinded): what the Unblocked research changed, and what drove the cost and time difference
+   - **Context impact** (un-blinded): what the Unblocked research changed, and the *episodes* that made the arms differ, each labelled as caused by the context, by the agent on its own, or by the environment
    - **Tie-breaker**: a blinded tie goes to Unblocked only when the impact pass traces a decisive discovery to the research context; the report marks it and keeps the blinded verdict alongside
+   - **Context's influence and Summary**: the harness sums each episode from the per-message figures and works out what the context did to cost, time and tokens (see [Reading the report](#reading-the-report)); a short Summary is written from those numbers
 6. Generates console, JSON, and HTML reports per comparison, and a batch summary across repeats
 
 ### Requirements
@@ -62,7 +64,7 @@ bun start -- --agent codex --model gpt-5.5 --repo /path/to/repo --task "implemen
 | `--model <model>` | Model for the agents | `opus` for claude; the CLI's configured default otherwise |
 | `--timeout <seconds>` | Max seconds per arm, shared across the draft and every fix pass | `5400` |
 | `--branch <name>` | Branch to base worktrees on | current HEAD |
-| `--keep-worktrees` | Don't clean up worktrees after run | `false` |
+| `--keep-worktrees` | Don't delete the arms' repository copies after the run | `false` |
 | `--cli` | Use the Unblocked CLI via the shell instead of MCP; the MCP server is then off in both arms | `false` |
 | `--repeat <n>` | Full comparisons to run for this task; the batch summary aggregates them | `2` |
 | `--concurrency <n>` | Comparisons to run at once | `2` |
@@ -108,15 +110,21 @@ bun start -- \
 
 If the base branch is behind its upstream the harness warns at start: when the task's fix has already landed upstream, both arms find it and the comparison measures something else.
 
-#### Regenerating a report
+#### Re-rendering and regenerating a report
 
-Reports can be rebuilt from saved transcripts after a parser or report change, with no agent runs:
+After a report layout or styling change, re-render `report.html` from a saved `result.json`, free and with no model calls:
+
+```bash
+bun run render results/run-2026-09-28T15-48-36-204Z-3a1b [more result dirs ...]
+```
+
+After a parser or analysis change, rebuild the result itself from the saved transcripts, with no agent runs:
 
 ```bash
 bun scripts/report_from_jsonl.ts <baseline.jsonl> <unblocked.jsonl> <result.json> [--attribute[=model]] [--rejudge[=model]] [--impact[=model]]
 ```
 
-Tokens, cost, time and tool calls are always re-parsed from the transcripts. The task, branch, diffs, review record, analyst labels, verdict and impact are carried over from `result.json`. The flags re-run the corresponding model pass (they cost money; without them the regeneration is free). Output goes to `results/regenerated/` under the current directory. Without a `result.json`, pass `[model] [branch] [task]` instead; diffs are then unavailable.
+Tokens, cost, time and tool calls are always re-parsed from the transcripts. The task, branch, diffs, review record, analyst labels, verdict and impact are carried over from `result.json`. The flags re-run the corresponding model pass: `--attribute` the message labels, `--rejudge` the requirement revision and the judge, `--impact` the impact pass. They cost money. Without them the only model call is the Summary, rewritten whenever the result has episodes (one `sonnet` call, a few cents). Output goes to a `regenerated/` folder next to the `result.json` given, or back into that folder when the `result.json` is already in one (`results/regenerated/` without a `result.json`). Without a `result.json`, pass `[model] [branch] [task]` instead; diffs are then unavailable.
 
 ### Output
 
@@ -126,7 +134,7 @@ A batch (`--repeat` 2 or more) writes to `results/batch-<timestamp>-<id>/`:
 results/batch-2026-09-20T06-12-45-805Z-6e2d/
 ├── summary.html             # Verdict tally and medians across the runs
 ├── summary.json
-├── requirements.json        # The shared requirement list (with --review)
+├── requirements.json        # The shared requirement list the checker and judge grade against
 ├── run-1/
 │   ├── baseline/
 │   │   ├── baseline.jsonl         # Canonical transcript: draft plus any fix passes
@@ -142,15 +150,30 @@ results/batch-2026-09-20T06-12-45-805Z-6e2d/
 
 A single comparison (`--repeat 1`) writes the contents of one `run-N/` folder to `results/run-<timestamp>/`.
 
-The HTML report opens automatically and includes:
-- Core task work: cost, model time, tool wait and tokens with housekeeping removed, next to the raw run totals
-- The blinded quality verdict with per-criterion scores and findings
-- The context-impact read: what the research changed, and which terms drove the cost and time difference
-- The review record: each requirement's status per round, fix-pass cost, disputes and waivers
-- Tool usage, slowest tool calls, and the Unblocked queries used
-- Full diffs from both arms
+The HTML report opens automatically. See [Reading the report](#reading-the-report).
 
-A run that was killed (contamination, no research call, timeout, or an API error such as a session limit) gets no verdict and is left out of the batch tally and medians.
+A run that was killed (contamination, no research call, an outward action, timeout, or an API error such as a session limit) gets no verdict and is left out of the batch tally and medians.
+
+### Reading the report
+
+The top of the report is the answer; everything else is behind **Full report**.
+
+- **Hero**: the task, a one-sentence Summary of what the context brought (or why it didn't help), and a scoreboard: the quality verdict, then the **context's influence** on cost, time and tokens. Green is better, red is worse.
+- **What drove it**: three or four plain bullets.
+- **What changed the numbers**: a waterfall for each metric. It starts at the Baseline, takes off (green) or adds (red) what Unblocked's context did, then what the agent did on its own, and ends at the end result, with the overall change.
+- **How these numbers are worked out**: the arithmetic and the episode table behind every figure above.
+- **Full report**: core work and housekeeping, the requirement check, the quality judge's per-requirement grades and findings, what the context did, arm details, tool usage, the research queries, and both diffs.
+
+**Core work.** Every figure is core task work: housekeeping (lockfile reverts, status checks, committing, redundant reruns) is removed from both arms. Time is model time plus tool wait; tokens are every token processed (input, cache writes, cache reads, output).
+
+**The context's influence.** The measured difference between the arms mixes what the context did with what each agent did on its own (a failed build, a bigger design, a lint loop). The impact pass marks the episodes that made the arms differ and their cause:
+
+- *context*: work the context shaped in the Unblocked arm (its research calls, and turns that used what came back), and work the Baseline did for lack of it (searching history, exploring callers, building a larger solution)
+- *agent* / *environment*: choices each agent made on its own, and environment noise
+
+The context's influence is the Baseline plus the Unblocked arm's context episodes, minus the Baseline's. The agents' own choices drop out of both arms. The measured difference splits exactly into the context's influence, the agents' own choices, and other work no episode covers.
+
+**Caveats.** The episode labels come from one model call. On one run a single borderline episode moved the cost influence from +1% to −10%, so read a small influence figure as "about zero". When the arms differ in quality, compare their cost only alongside that quality gap: a cheap arm that met fewer requirements is not a saving.
 
 ### Architecture
 
@@ -165,7 +188,7 @@ src/
 │   ├── cursor.ts   Cursor adapter and stream-json translator
 │   └── codex.ts    Codex adapter and `exec --json` translator
 ├── transcript.ts   Canonical transcript parser (tokens, cost, tool calls, timing)
-├── worktree.ts     Worktree creation and cleanup, agent branch reset
+├── worktree.ts     Isolated per-arm clones, push blocking
 ├── git.ts          Git helpers
 ├── review.ts       Requirement extraction, per-round check, dispute rulings and waivers
 ├── analyst.ts      Single-turn structured model calls, blinding of treatment names
@@ -173,11 +196,24 @@ src/
 ├── quality.ts      Blinded quality judge, verification record, tie-breaker
 ├── impact.ts       Un-blinded context-impact pass
 ├── economics.ts    Cost and time breakdown between the arms
+├── revision.ts     Requirement revision pass: restate a requirement to a quoted team decision
+├── context-effect.ts  Context's influence from the impact episodes; the Summary writer
+├── unblocked-cli.ts   Recognise Unblocked CLI calls and outward actions (push, gh writes) in shell commands
 ├── report.ts       Console + HTML + JSON reports, batch summary
+├── report-style.ts Report CSS, fonts and the scoreboard count-up
 ├── util.ts         Token pricing, formatting helpers
-└── types.ts        Shared type definitions
+├── types.ts        Shared type definitions
+├── simulate/
+│   └── index.ts    `simulate` CLI: fixtures and flags → a compare config with the simulated engine
+└── engine/         The simulated context engine
+    ├── cli.ts      The fake `unblocked` CLI: runs a research agent per call
+    ├── shim.ts     PATH shim, UC_ENGINE_* environment, call log
+    ├── prompt.ts   Research prompts and Unblocked's output format
+    ├── args.ts     CLI argument parsing
+    └── discount.ts Caps each research call's time in the arm's timings
 scripts/
-└── report_from_jsonl.ts   Regenerate a report from saved transcripts
+├── report_from_jsonl.ts   Regenerate a result and report from saved transcripts
+└── render_report.ts       Re-render report.html from result.json (`bun run render`)
 ```
 
 #### Canonical transcript
@@ -189,9 +225,19 @@ Every analysis pass reads Claude Code's stream-json. The Cursor and Codex adapte
 - Time: Cursor events carry timestamps. Codex events don't, so arrival time stands in.
 - Tokens: Cursor and Codex report totals per session only, not per message, so per-message cost and output in the attribution are apportioned (the report marks per-message output as estimated). Codex's `input_tokens` includes cached tokens; they are split out. Neither reports cost, so cost is tokens × the list price in `src/util.ts`.
 
-#### Contamination guards
+#### Safety
 
-- **Baseline arm**: Unblocked MCP tools and CLI blocked via `--disallowed-tools`. If the baseline somehow calls Unblocked, the run is killed immediately.
+Agents run with every permission, in a copy of a real repository, with the user's credentials. Nothing they do may leave that copy:
+
+- Each arm's clone sets `origin`'s push URL to an unreachable one, and every agent process (arms and the simulated engine's research agents) runs with git configuration, passed through the environment, that rewrites any push URL the same way. A `git push` fails.
+- The guard kills a run whose agent runs `git push`, a `gh pr|issue|release|repo` write (create, merge, comment, review, ...), or a `gh api` write. `gh` has no switch to block writes, so this reacts as the command starts; without a pushed branch, `gh pr create` fails anyway.
+- The prompts forbid pushing and opening or commenting on pull requests and issues.
+
+In an early run, before these, an agent committed in its worktree, pushed a branch to the real remote and opened a PR as the user; agents in both arms also cherry-picked a fix from the user's local branches, which a shared worktree exposes.
+
+### Contamination guards
+
+- **Baseline arm**: Unblocked's MCP tools are blocked (see below). If the baseline somehow calls Unblocked, the run is killed immediately.
 - **Unblocked arm**: If Unblocked isn't called within 120 seconds, the run is killed (ensures the nudge prompt worked).
 - A killed arm voids the comparison: no quality verdict or impact pass is run for it.
 
@@ -218,21 +264,29 @@ Tasks where Unblocked adds less value:
 
 ## Context engine simulator
 
-`bun run simulate` runs the same task twice against a real repository, in parallel worktrees, and scores both results 0–100 against your acceptance criteria:
+`bun run simulate` is a `compare` run in which the Unblocked arm talks to a **simulated context engine** instead of the real service. Everything else is the harness above: parallel worktrees, identical prompts for both arms, contamination guards, the optional review loop, attribution, the blinded judge, the impact pass and the reports. The only difference between the arms is whether `unblocked context-research` returns anything.
 
-- **Baseline arm**: Plan → Review → Implement → Evaluate. The agent works from the task description alone.
-- **Context arm**: Gather Context → Extract Patterns → Plan → Gather Plan Context → Review → Implement → Evaluate + Attribute. A read-only researcher agent first searches the codebase and every connected MCP source (issues, PRs, chat, docs) and writes a context briefing; the agent plans and implements from it. The attribution pass shows which gathered context actually shaped the change.
+How the simulated engine works:
 
-It is a separate tool from `compare`, with its own agent invokers, prompts and reports (`src/simulate/`); it shares only the price table. Supported agents: `claude` (default), `codex`, `cursor`.
+- The Unblocked arm runs in CLI mode, with a shim for `unblocked` first on its PATH (`src/engine/`). Both arms keep all their MCP servers; only the real Unblocked is blocked.
+- Each `unblocked context-research` (or `context-get-urls`) call starts a research agent: the **same agent CLI** as the arm (Claude Code, Cursor or Codex), with its MCP servers minus Unblocked, told not to edit anything. It runs in the original repository so its MCP logins apply there, searches code, git history, `gh` and every MCP source, and prints results in Unblocked's format (`**Title**` / `**URL**` items separated by `---`).
+- Each call's time and cost is logged. The report shows them in a **Simulated context engine** section, separate from the arm's own cost, since the engine stands in for the service. Transcripts are kept under `unblocked/engine/`.
+- A research pass takes minutes rather than the service's seconds. The Unblocked arm's prompt tells the agent to allow for it, and each call counts as at most 20 seconds (or its actual time, if shorter) in the arm's timings, so the comparison measures the context and not the simulator's speed.
+- The arm calls the shim by its absolute path, since Cursor's and Codex's login shells reorder `PATH`. The contamination guard kills an arm that reaches any other `unblocked`.
 
-Configure the agent's MCP servers for the target repository first (launch the agent in the repo and check they connect): the context arm can only gather what the agent can reach.
+Limits worth knowing:
+
+- The research agent runs in your real checkout of the repository, not an isolated clone, so it sees whatever is checked out there. Read-only is enforced for Claude Code only; Cursor and Codex research agents are told not to write. The report flags a call after which the repository changed.
+- Two research calls running at once can overlap in time, and the 20-second cap then over-subtracts.
+
+Configure the agent's MCP servers for the target repository first (launch the agent in the repo and check they connect): the engine can only find what the agent can reach from there.
 
 ### Usage
 
 With a YAML fixture (see [`examples/simulate-fixture.yaml`](examples/simulate-fixture.yaml)):
 
 ```bash
-bun run simulate --fixture my-experiment.yaml --verbose
+bun run simulate --fixture my-experiment.yaml
 ```
 
 Or with flags, which override fixture values:
@@ -250,21 +304,16 @@ bun run simulate \
 | `--fixture <path>` | YAML fixture file | — |
 | `--repo <path>` | Target git repository | *(required)* |
 | `--task <string>` / `--task-file <path>` | Task description | *(required)* |
-| `--criteria <string>` / `--criteria-file <path>` | Acceptance criteria for scoring; without them, evaluation and attribution are skipped | — |
-| `--context-instructions <string>` / `--context-instructions-file <path>` | Extra instructions for the context-gathering agents | — |
-| `--agent <name>` | `claude`, `codex` or `cursor` | `claude` |
-| `--model <model>` | Model for task runs | `sonnet` |
-| `--context-model <model>` | Model for context gathering | same as `--model` |
-| `--eval-model <model>` | Model for evaluation | same as `--model` |
-| `--timeout <seconds>` | Max seconds per task step | `3600` |
-| `--context-timeout <seconds>` | Max seconds per context step | `600` |
-| `--branch <name>` | Branch to base worktrees on | default branch |
-| `--api-url <url>` | Custom API base URL for Claude (`ANTHROPIC_BASE_URL`) | — |
-| `--disable-mcp <servers...>` | MCP servers to block in both arms; a call to one aborts the run | — |
-| `--keep-worktrees` | Keep worktrees after the run | `false` |
-| `--verbose` | Stream agent activity live | `false` |
+| `--criteria <string>` / `--criteria-file <path>` | Acceptance criteria; they become the requirement list the checker and judge use | — |
+| `--context-instructions <string>` / `--context-instructions-file <path>` | Extra instructions for every research call | — |
+| `--agent <name>` | `claude`, `codex` or `cursor`: the agent under test and the research agent | `claude` |
+| `--model <model>` | Model for the agent | `opus` for claude; the CLI's default otherwise |
+| `--context-model <model>` | Model for the research agent | same as `--model` |
+| `--context-timeout <seconds>` | Max seconds per research call | `300` |
+| `--timeout <seconds>` | Max seconds per arm | `5400` |
+| `--repeat <n>` | Comparisons to run | `1` |
+| `--review`, `--max-review-rounds`, `--branch`, `--keep-worktrees`, `--concurrency`, `--judge-model`, `--checker-model`, `--analyst-model`, `--no-attribution` | As for `compare` | |
 
 ### Output
 
-`results/experiment-<timestamp>/` with `report.html` (standalone visual report) and `result.json`, plus a comparison table in the terminal: quality score, wall-clock time, cost and tokens per arm and per phase.
-
+The same as `compare` (`results/run-*` or `results/batch-*`, opened in the browser when done), with the simulated engine's calls in the report and the console summary.

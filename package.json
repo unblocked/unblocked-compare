@@ -8,6 +8,7 @@
     "start": "bun src/index.ts",
     "compare": "bun src/index.ts",
     "simulate": "bun src/simulate/index.ts",
+    "render": "bun scripts/render_report.ts",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test"
   },

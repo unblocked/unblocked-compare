@@ -64,7 +64,18 @@ export const REPORT_CSS = `
   .hero-meta span:first-child { color: var(--band-label); font-weight: 600; }
   .hero-vs { font-size: 15px; color: var(--band-label); margin-bottom: 8px; }
   .hero-task { font-family: var(--display); font-size: 46px; line-height: 1.02; font-weight: 800; letter-spacing: -0.035em; font-variation-settings: "opsz" 96; max-width: 22ch; margin-bottom: 14px; text-wrap: balance; }
-  .hero-task-rest { font-size: 15px; line-height: 1.6; color: var(--band-muted); max-width: 70ch; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .ticket-ref { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; font-size: 14px; }
+  .ticket-key { padding: 3px 9px; border-radius: 6px; background: rgba(238, 243, 252, 0.1); border: 1px solid var(--band-rule); color: var(--band-ink); font-weight: 600; letter-spacing: 0.01em; }
+  .ticket-ref a { color: var(--band-label); text-decoration: none; }
+  .ticket-ref a:hover { text-decoration: underline; }
+  .ticket-body { max-width: 66ch; margin-top: 22px; font-size: 16px; line-height: 1.65; color: rgba(238, 243, 252, 0.84); overflow-wrap: anywhere; }
+  .ticket-body h3 { font-family: var(--display); font-size: 15px; font-weight: 600; letter-spacing: 0; color: var(--band-label); margin: 22px 0 6px; }
+  .ticket-body h3:first-child { margin-top: 0; }
+  .ticket-body p { margin: 0 0 8px; }
+  .ticket-body ul { list-style: none; margin: 4px 0 0; padding: 0; }
+  .ticket-body li { position: relative; padding-left: 20px; margin: 0 0 9px; }
+  .ticket-body li::before { content: ""; position: absolute; left: 3px; top: 0.66em; width: 6px; height: 6px; border-radius: 50%; background: var(--band-label); opacity: 0.75; }
+  .ticket-body code { font-family: var(--mono); font-size: 0.86em; padding: 1px 5px; border-radius: 4px; background: rgba(238, 243, 252, 0.08); color: var(--band-ink); }
   .hero-lede { font-family: var(--display); font-size: 30px; line-height: 1.2; font-weight: 500; letter-spacing: -0.02em; max-width: 34ch; margin: 48px 0 40px; padding-top: 28px; border-top: 1px solid var(--band-rule); text-wrap: balance; }
   .board { display: grid; grid-template-columns: 1.15fr 1fr 1fr 1fr; margin-bottom: 40px; }
   .cell { min-width: 0; padding: 0 18px; border-left: 1px solid var(--band-rule); }
@@ -237,6 +248,7 @@ export const REPORT_CSS = `
     .hero { margin: 0 -16px 36px; padding: 28px 16px 24px; }
     .hero-meta { margin-bottom: 28px; }
     .hero-task { font-size: 34px; }
+    .ticket-body { font-size: 15px; }
     .hero-lede { font-size: 23px; margin: 32px 0 28px; padding-top: 22px; }
     .board { grid-template-columns: 1fr 1fr; row-gap: 28px; }
     .cell:nth-child(3) { padding-left: 0; border-left: none; }

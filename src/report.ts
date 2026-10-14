@@ -501,9 +501,7 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
       </table>`;
   };
   // The opening: the task, the verdict in a sentence, and the scoreboard.
-  const [taskHead, ...taskTail] = result.task.trim().split("\n");
-  const taskTitle = taskHead.length <= 110 ? taskHead : "";
-  const taskRest = (taskTitle ? taskTail.join("\n") : result.task).trim();
+  const ticket = ticketParts(result.task);
   const boardCell = (label: string, key: keyof Totals, fmt: (n: number) => string) => {
     const e = ce!;
     const infl = pctChange(e.adjustedBaseline[key], e.adjustedUnblocked[key]);
@@ -533,8 +531,9 @@ export function writeHtmlReport(result: ComparisonResult, outDir: string): strin
   <header class="hero">
     <p class="hero-meta"><span>Unblocked Compare</span><span>${runDate(result).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}</span></p>
     <p class="hero-vs">${escapeHtml(L.vs)}</p>
-    ${taskTitle ? `<h1 class="hero-task">${escapeHtml(taskTitle)}</h1>` : `<h1 class="hero-task">${escapeHtml(L.vs)}</h1>`}
-    ${taskRest ? `<p class="hero-task-rest">${escapeHtml(taskRest)}</p>` : ""}
+    ${ticket.key || ticket.url ? `<p class="ticket-ref">${ticket.key ? `<span class="ticket-key">${escapeHtml(ticket.key)}</span>` : ""}${ticket.url ? `<a href="${escapeHtml(ticket.url)}">Open in ${escapeHtml(ticket.source)}</a>` : ""}</p>` : ""}
+    <h1 class="hero-task">${escapeHtml(ticket.title || L.vs)}</h1>
+    ${ticket.body ? `<div class="ticket-body">${ticketBodyHtml(ticket.body)}</div>` : ""}
     ${ce.tldr ? `<p class="hero-lede">${typeset(ce.tldr.headline)}</p>` : ""}
     <div class="board">
       ${qualityCell()}
@@ -1048,6 +1047,48 @@ function labelsFor(r?: { contextEngine?: string }): Labels {
   return { short, arm: `With ${short}`, baseline: sim ? "Baseline" : "Baseline (no Unblocked)", vs: `Baseline vs ${short}`, impactTitle: sim ? "What the simulated context did" : "What the Unblocked context did", queries: sim ? "Simulated Context Queries" : "Unblocked Context Queries" };
 }
 let L: Labels = labelsFor();
+
+// The task as a ticket: key, link and title from its first lines, and the
+// rest as sections ("Label: text"), paragraphs and bullet lists.
+function ticketParts(task: string): { key: string; source: string; url: string; title: string; body: string } {
+  const lines = task.trim().split("\n");
+  let [head, ...rest] = lines;
+  const m = head.match(/^(?:(Linear|Jira|GitHub)\s+)?([A-Z][A-Z0-9]+-\d+):\s*(.+)$/);
+  const key = m?.[2] ?? "";
+  const title = m ? m[3] : head.length <= 110 ? head : "";
+  if (!title) rest = lines;
+  let url = "";
+  if (rest[0]?.trim().match(/^https?:\/\/\S+$/)) url = rest.shift()!.trim();
+  const source = m?.[1] ?? (url.includes("linear.app") ? "Linear" : url.includes("atlassian") ? "Jira" : url.includes("github.com") ? "GitHub" : "ticket");
+  return { key, source, url, title, body: rest.join("\n").trim() };
+}
+
+function ticketBodyHtml(body: string): string {
+  // Identifiers (CamelCase, camelCase, snake_case) in a code face.
+  const inline = (t: string) => escapeHtml(t).replace(/\b([A-Z][a-z0-9]+[A-Z]\w*|[a-z][a-z0-9]*[A-Z]\w*|[a-z]+_[a-z_]+)\b/g, "<code>$1</code>");
+  const out: string[] = [];
+  for (const block of body.split(/\n\s*\n/)) {
+    const lines = block.split("\n").map(l => l.trimEnd()).filter(Boolean);
+    if (!lines.length) continue;
+    const label = lines[0].match(/^([A-Z][\w /&-]{1,40}):\s*(.*)$/);
+    if (label) { out.push(`<h3>${escapeHtml(label[1])}</h3>`); lines[0] = label[2].charAt(0).toUpperCase() + label[2].slice(1); }
+    let list: string[] = [], para: string[] = [];
+    const flush = () => {
+      if (para.length) out.push(`<p>${inline(para.join(" "))}</p>`);
+      if (list.length) out.push(`<ul>${list.map(i => `<li>${inline(i)}</li>`).join("")}</ul>`);
+      para = []; list = [];
+    };
+    for (const l of lines) {
+      if (!l.trim()) continue;
+      const item = l.match(/^\s*(?:[-*•]|\d+[.)])\s+(.*)$/);
+      if (item) { if (para.length) { out.push(`<p>${inline(para.join(" "))}</p>`); para = []; } list.push(item[1]); }
+      else if (list.length && /^\s{2,}\S/.test(l)) list[list.length - 1] += " " + l.trim();
+      else { if (list.length) { out.push(`<ul>${list.map(i => `<li>${inline(i)}</li>`).join("")}</ul>`); list = []; } para.push(l.trim()); }
+    }
+    flush();
+  }
+  return out.join("\n");
+}
 
 // When the run happened: its first tool call, so a re-rendered report keeps
 // the run's date. Falls back to now for a run with no tool calls.

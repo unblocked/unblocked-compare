@@ -1,17 +1,24 @@
-// Cross-run consolidation: one judge pass over every run of the same ticket.
+// Cross-run consolidation: what the context did, read from every run of the
+// same ticket together.
 //
-// A single run's impact pass labels each episode by what it can see in that
-// one pair of transcripts, so a behaviour the context changes indirectly (an
-// agent that, given a working pattern, skips visual checks) reads as "the
-// agent's own choice". Repeats are the evidence: a difference that shows up
-// in the same direction run after run is not variance. This pass looks
-// across the runs for such patterns and may relabel episodes, under rules the
-// harness enforces; the numbers are then recomputed per run, deterministically.
-import type { ComparisonResult, Condition, EpisodeCause, ToolCall } from "./types.ts";
-import { computeContextEffect, type ContextEffect, type Totals } from "./context-effect.ts";
+// Each run's impact pass sees one pair of transcripts and labels a few
+// episodes; most of the measured difference falls outside them, so a single
+// run cannot say how much of it the context caused. Repeats can: the context
+// is the only systematic difference between the arms, so a difference that
+// points the same way in every comparable run is the context's doing, unless
+// a consistent cause other than the context explains it. Variance shows up as
+// differences that change direction from run to run.
+//
+// One judge call decides which runs are comparable (both arms delivered the
+// same scope) and names consistent patterns with their episodes; the harness
+// does the arithmetic.
+import type { ComparisonResult, Condition, ToolCall } from "./types.ts";
+import type { ContextEffect, EpisodeSum, Totals } from "./context-effect.ts";
 import { runStructured } from "./analyst.ts";
 import { unblockedCommand } from "./unblocked-cli.ts";
 import { formatCost, log } from "./util.ts";
+
+export const CONSOLIDATE_MODEL = "claude-opus-5-5";
 
 // What each arm spent its tool calls on, by kind.
 const KINDS: [string, (tc: ToolCall, cmd: string) => boolean][] = [
@@ -37,15 +44,38 @@ export function activityProfile(toolCalls: ToolCall[]): Record<string, number> {
   return out;
 }
 
-export interface Pattern { description: string; direction: "baseline-more" | "unblocked-more"; runs: number[]; consistent: boolean; cause: "context" | "agent"; evidence: string }
-export interface Reclassification { run: number; episode: number; from: EpisodeCause; to: EpisodeCause; pattern: number; reason: string }
-export interface RunEffect { dir: string; verdict: string; before: ContextEffect; after: ContextEffect }
+export type PatternCause = "context" | "agent" | "environment" | "fix loop";
+export interface Pattern {
+  description: string;
+  cause: PatternCause;
+  direction: "baseline-more" | "unblocked-more";
+  runs: number[];
+  consistent: boolean;
+  evidence: string;
+  episodes: { run: number; episode: number }[];
+}
+export interface RunRead { run: number; comparable: boolean; reason: string }
+
+// One metric, consolidated.
+export interface MetricRead {
+  key: keyof Totals;
+  comparableRuns: number[];
+  measured: number[];        // per comparable run, % vs Baseline
+  consistent: boolean;       // same direction across the comparable runs
+  carvedOut: number[];       // per comparable run, % explained by consistent non-context patterns
+  influence: number | null;  // median(measured - carvedOut) when consistent
+  range: [number, number] | null;
+  byContextPatterns: number; // median % the context patterns' episodes account for
+  perRunLabels: number;      // median of each run's own context's-influence figure
+}
+
 export interface Consolidation {
   task: string;
-  runs: RunEffect[];
+  dirs: string[];
+  verdicts: string[];
+  runs: RunRead[];
   patterns: Pattern[];
-  reclassifications: Reclassification[];
-  rejected: { run: number; episode: number; reason: string }[];
+  metrics: MetricRead[];
   summary: string;
   model: string;
   costUsd: number;
@@ -54,56 +84,71 @@ export interface Consolidation {
 const SCHEMA = {
   type: "object",
   properties: {
+    runs: { type: "array", items: { type: "object", properties: {
+      run: { type: "integer" }, comparable: { type: "boolean" }, reason: { type: "string" },
+    }, required: ["run", "comparable", "reason"] } },
     patterns: { type: "array", items: { type: "object", properties: {
       description: { type: "string" },
+      cause: { type: "string", enum: ["context", "agent", "environment", "fix loop"] },
       direction: { type: "string", enum: ["baseline-more", "unblocked-more"] },
       runs: { type: "array", items: { type: "integer" } },
       consistent: { type: "boolean" },
-      cause: { type: "string", enum: ["context", "agent"] },
       evidence: { type: "string" },
-    }, required: ["description", "direction", "runs", "consistent", "cause", "evidence"] } },
-    reclassify: { type: "array", items: { type: "object", properties: {
-      run: { type: "integer" },
-      episode: { type: "integer" },
-      cause: { type: "string", enum: ["context", "agent", "environment"] },
-      pattern: { type: "integer" },
-      reason: { type: "string" },
-    }, required: ["run", "episode", "cause", "pattern", "reason"] } },
+      episodes: { type: "array", items: { type: "object", properties: { run: { type: "integer" }, episode: { type: "integer" } }, required: ["run", "episode"] } },
+    }, required: ["description", "cause", "direction", "runs", "consistent", "evidence", "episodes"] } },
     summary: { type: "string" },
   },
-  required: ["patterns", "reclassify", "summary"],
+  required: ["runs", "patterns", "summary"],
 };
 
 const pct = (from: number, to: number) => (from ? Math.round(((to - from) / from) * 100) : 0);
 
+export function median(xs: number[]): number {
+  const a = [...xs].sort((x, y) => x - y);
+  return a.length % 2 ? a[(a.length - 1) / 2] : Math.round((a[a.length / 2 - 1] + a[a.length / 2]) / 2);
+}
+
+// Same direction in every comparable run; with four or more, three in four.
+export function isConsistent(values: number[]): boolean {
+  const moved = values.filter(v => v !== 0);
+  if (moved.length < 2) return false;
+  const down = moved.filter(v => v < 0).length, up = moved.length - down;
+  const agree = Math.max(down, up) / moved.length;
+  return moved.length >= 4 ? agree >= 0.75 : agree === 1;
+}
+
 function runBlock(r: ComparisonResult, i: number): string {
-  const e = r.contextEffect;
+  const e = r.contextEffect!;
   const prof = (c: Condition) => Object.entries(activityProfile(r[c].run.toolCalls)).map(([k, n]) => `${k} ${n}`).join(", ");
   const im = r.impact;
+  const req = (r.quality?.requirements ?? []).map(q => `${q.requirement.slice(0, 70)}: Baseline ${q.baseline.status}, Unblocked ${q.unblocked.status}`).join("; ");
   return `=================== RUN ${i + 1} ===================
 Verdict (blinded judge): ${r.quality?.verdict.better ?? "none"}. ${r.quality?.verdict.rationale ?? ""}
+Requirements: ${req || "-"}
 Fix loop: ${r.baseline.review ? `on (Baseline ${r.baseline.review.passes.length} round(s), Unblocked ${r.unblocked.review?.passes.length ?? 0})` : "off (single pass)"}
-Core totals: Baseline $${e?.baseline.costUsd.toFixed(2)}, ${Math.round((e?.baseline.durationMs ?? 0) / 1000)}s; Unblocked $${e?.unblocked.costUsd.toFixed(2)}, ${Math.round((e?.unblocked.durationMs ?? 0) / 1000)}s
+Core totals: Baseline $${e.baseline.costUsd.toFixed(2)}, ${Math.round(e.baseline.durationMs / 1000)}s, ${Math.round(e.baseline.tokens / 1000)}k tokens, diff ${r.baseline.diffStats.filesChanged} files +${r.baseline.diffStats.linesAdded}; Unblocked $${e.unblocked.costUsd.toFixed(2)}, ${Math.round(e.unblocked.durationMs / 1000)}s, ${Math.round(e.unblocked.tokens / 1000)}k tokens, diff ${r.unblocked.diffStats.filesChanged} files +${r.unblocked.diffStats.linesAdded}. Cost difference ${pct(e.baseline.costUsd, e.unblocked.costUsd)}%.
 Tool calls by kind: Baseline: ${prof("baseline")}. Unblocked: ${prof("unblocked")}.
 What the Unblocked arm's research returned and how it was used:
 ${(im?.research ?? []).map(x => `- T${x.turn} [${x.value}] ${x.query.slice(0, 160)}; used: ${x.itemsUsed.map(u => `${u.item.slice(0, 80)} (${u.use.slice(0, 100)})`).join("; ") || "nothing"}; note: ${x.note.slice(0, 200)}`).join("\n") || "- none"}
 Impact summary: ${im?.impact.summary ?? "-"}
-Episodes (index: arm, turns, cause, cost, what):
-${(e?.episodes ?? []).map((x, j) => `  ${j}: ${x.arm}, T${x.fromTurn}-T${x.toTurn}, ${x.cause}, $${x.costUsd.toFixed(2)}, ${x.what}`).join("\n") || "  none"}`;
+Episodes (index: arm, turns, analyst's cause, cost, what):
+${e.episodes.map((x, j) => `  ${j}: ${x.arm}, T${x.fromTurn}-T${x.toTurn}, ${x.cause}, $${x.costUsd.toFixed(2)}, ${x.what}`).join("\n") || "  none"}`;
 }
 
 function prompt(task: string, results: ComparisonResult[]): string {
-  return `The same coding task was run ${results.length} times. Each run compares a Baseline agent with an agent that also had Unblocked, a context engine that returns the organisation's PRs, docs, chat and issues. For each run, an analyst labelled the episodes that made the arms differ: "context" (shaped by Unblocked's context in the Unblocked arm, or work the Baseline did for lack of it), "agent" (a choice the model made on its own), or "environment". Each run was labelled on its own, so a behaviour the context changes indirectly can be mislabelled "agent" in every run.
+  return `The same coding task was run ${results.length} times. Each run compares a Baseline agent with an agent that also had Unblocked, a context engine that returns the organisation's PRs, docs, chat and issues. Everything else about the arms is identical, so the context is the only systematic difference between them. A difference that points the same way in run after run is therefore the context's doing, unless a consistent cause other than the context explains it; a difference that changes direction between runs is ordinary variance.
 
-Your job: look ACROSS the runs for behaviours that differ between the arms in a consistent direction, decide whether each pattern is the context's doing or ordinary variance, and correct episode labels accordingly.
+Your job, across the runs:
+1. runs: for every run, decide whether its cost, time and token figures are comparable: both arms delivered the same scope of work. A run where one arm delivered a fraction of the task (e.g. only a settings slice) is not comparable; differences in quality details within the same scope are fine. Give a one-sentence reason.
+2. patterns: name the behaviours that differ between the arms across runs, using the tool-call counts, totals and episodes. For each: direction, the 1-based runs where it appears, whether it is consistent (same direction in at least half the runs and never the opposite), and its cause:
+   - "context": the research shaped it (cite what the research returned that plausibly causes it, or what the Baseline had to do for lack of it). Indirect effects count: an agent handed a working pattern may verify or explore less.
+   - "agent": a choice unrelated to anything the research returned, that would plausibly happen in either arm.
+   - "environment": machine or tooling noise.
+   - "fix loop": extra rounds the requirement checker sent one arm back for, when unrelated to the context.
+   List the episodes (run, episode index) that make up the pattern, from either arm. Only list episodes that clearly belong to it.
+3. summary: at most 120 words, plain language: what the context consistently did across the runs, for better or worse, what was variance, and which runs were left out of the numbers and why.
 
-Rules:
-- A pattern is "consistent" only when it appears in at least half of the runs in the same direction (one arm does it more), and in no run in the opposite direction. Use the tool-call counts and episodes as evidence; list the 1-based run numbers where it appears.
-- cause "context" requires a plausible mechanism tied to what the Unblocked arm's research returned in those runs (cite the item: e.g. it returned a working pattern to copy, so the agent did not need to verify the UI by eye). Without such a link, cause is "agent".
-- Reclassify an episode to "context" only when it belongs to a consistent pattern with cause "context". Reclassify a "context" episode to "agent" only when a consistent pattern shows the same work in both arms at a similar rate. Leave everything else alone; most episodes should stay as they are.
-- Some runs had a fix loop (a checker sent the agent back to meet open requirements) and some were a single pass; extra fix rounds explain extra work, not the context.
-- run is 1-based; episode is the episode index shown for that run; pattern is the 0-based index into your patterns list.
-- summary: at most 120 words, plain language, what the runs show together about the context's influence, including what stays variance.
+Be strict about "agent" and "environment": label a consistent pattern so only with a concrete reason it is not the context, since anything consistent is otherwise the context's doing.
 
 =================== TASK ===================
 ${task.slice(0, 4000)}
@@ -111,60 +156,51 @@ ${task.slice(0, 4000)}
 ${results.map((r, i) => runBlock(r, i)).join("\n\n")}`;
 }
 
-function withCauses(r: ComparisonResult, causes: EpisodeCause[]): ComparisonResult {
-  if (!r.impact?.episodes) return r;
-  return { ...r, impact: { ...r.impact, episodes: r.impact.episodes.map((ep, j) => ({ ...ep, cause: causes[j] ?? ep.cause })) } };
+function share(eps: EpisodeSum[], key: keyof Totals, base: number): number {
+  const sum = (arm: Condition) => eps.filter(x => x.arm === arm).reduce((s, x) => s + x[key], 0);
+  return base ? ((sum("unblocked") - sum("baseline")) / base) * 100 : 0;
 }
 
-export async function consolidate(results: { dir: string; result: ComparisonResult }[], model: string): Promise<Consolidation | null> {
-  const usable = results.filter(x => x.result.contextEffect && x.result.impact?.episodes);
-  if (usable.length < 2) { log("Consolidate: need at least two runs with episodes"); return null; }
+export function readMetrics(effects: ContextEffect[], runs: RunRead[], patterns: Pattern[]): MetricRead[] {
+  const comparable = runs.filter(r => r.comparable).map(r => r.run).filter(n => n >= 1 && n <= effects.length);
+  const episodesOf = (p: Pattern, run: number) => p.episodes.filter(x => x.run === run).map(x => effects[run - 1].episodes[x.episode]).filter(Boolean);
+  const carveOutPatterns = patterns.filter(p => p.consistent && p.cause !== "context");
+  const contextPatterns = patterns.filter(p => p.consistent && p.cause === "context");
+  return (["costUsd", "durationMs", "tokens"] as (keyof Totals)[]).map(key => {
+    const measured = comparable.map(n => pct(effects[n - 1].baseline[key], effects[n - 1].unblocked[key]));
+    const carvedOut = comparable.map(n => Math.round(carveOutPatterns.reduce((s, p) => s + share(episodesOf(p, n), key, effects[n - 1].baseline[key]), 0)));
+    const net = measured.map((m, i) => m - carvedOut[i]);
+    const consistent = isConsistent(net);
+    return {
+      key,
+      comparableRuns: comparable,
+      measured,
+      consistent,
+      carvedOut,
+      influence: consistent ? median(net) : null,
+      range: net.length ? [Math.min(...net), Math.max(...net)] : null,
+      byContextPatterns: comparable.length ? median(comparable.map(n => Math.round(contextPatterns.reduce((s, p) => s + share(episodesOf(p, n), key, effects[n - 1].baseline[key]), 0)))) : 0,
+      perRunLabels: median(effects.map(e => pct(e.adjustedBaseline[key], e.adjustedUnblocked[key]))),
+    };
+  });
+}
+
+export async function consolidate(results: { dir: string; result: ComparisonResult }[], model = CONSOLIDATE_MODEL): Promise<Consolidation | null> {
+  const usable = results.filter(x => x.result.contextEffect);
+  if (usable.length < 2) { log("Consolidate: need at least two runs with a context effect"); return null; }
   const task = usable[0].result.task;
   log(`Consolidate: ${usable.length} runs, with ${model}…`);
-  const res = await runStructured<{ patterns: Pattern[]; reclassify: { run: number; episode: number; cause: EpisodeCause; pattern: number; reason: string }[]; summary: string }>(
+  const res = await runStructured<{ runs: RunRead[]; patterns: Pattern[]; summary: string }>(
     "Consolidate", prompt(task, usable.map(x => x.result)), model, SCHEMA, 15 * 60 * 1000, false);
   if (!res) return null;
-  const { patterns, summary } = res.data;
-
-  // Enforce the rules: a relabel must point at a consistent pattern that
-  // covers its run, and a move to "context" needs a pattern with cause context.
+  // Every run gets a comparability call; one the judge skipped counts as comparable.
+  const runs: RunRead[] = usable.map((_, i) => res.data.runs.find(r => r.run === i + 1) ?? { run: i + 1, comparable: true, reason: "not assessed" });
   const half = Math.ceil(usable.length / 2);
-  const causes = usable.map(x => x.result.impact!.episodes!.map(ep => ep.cause));
-  const reclassifications: Reclassification[] = [], rejected: Consolidation["rejected"] = [];
-  for (const rc of res.data.reclassify) {
-    const p = patterns[rc.pattern], runIdx = rc.run - 1;
-    const from = causes[runIdx]?.[rc.episode];
-    const why =
-      from === undefined ? "no such run or episode"
-      : !p ? "no such pattern"
-      : !p.consistent || p.runs.length < half ? `pattern is not consistent (seen in ${p.runs.length} of ${usable.length} runs)`
-      : !p.runs.includes(rc.run) ? "pattern does not cover this run"
-      : rc.cause === "context" && p.cause !== "context" ? "pattern is not attributed to the context"
-      : from === rc.cause ? "already labelled so"
-      : "";
-    if (why) { rejected.push({ run: rc.run, episode: rc.episode, reason: why }); continue; }
-    causes[runIdx][rc.episode] = rc.cause;
-    reclassifications.push({ run: rc.run, episode: rc.episode, from: from!, to: rc.cause, pattern: rc.pattern, reason: rc.reason });
-  }
-
-  const runs = usable.map((x, i) => ({
-    dir: x.dir,
-    verdict: x.result.quality?.verdict.better ?? "none",
-    before: x.result.contextEffect!,
-    after: computeContextEffect(withCauses(x.result, causes[i])) ?? x.result.contextEffect!,
-  }));
-  log(`Consolidate: ${patterns.length} pattern(s), ${reclassifications.length} relabel(s), ${rejected.length} rejected; ${formatCost(res.costUsd)} via ${res.modelUsed}`);
-  return { task, runs, patterns, reclassifications, rejected, summary: summary.trim(), model: res.modelUsed, costUsd: res.costUsd };
-}
-
-// The context's influence for one run and metric, in percent of the Baseline.
-export function influencePct(e: ContextEffect, key: keyof Totals): number {
-  return pct(e.adjustedBaseline[key], e.adjustedUnblocked[key]);
-}
-export function measuredPct(e: ContextEffect, key: keyof Totals): number {
-  return pct(e.baseline[key], e.unblocked[key]);
-}
-export function median(xs: number[]): number {
-  const a = [...xs].sort((x, y) => x - y);
-  return a.length % 2 ? a[(a.length - 1) / 2] : Math.round((a[a.length / 2 - 1] + a[a.length / 2]) / 2);
+  const patterns = res.data.patterns.map(p => ({ ...p, consistent: p.consistent && p.runs.length >= half }));
+  const metrics = readMetrics(usable.map(x => x.result.contextEffect!), runs, patterns);
+  log(`Consolidate: ${runs.filter(r => r.comparable).length}/${usable.length} comparable runs, ${patterns.filter(p => p.consistent).length} consistent pattern(s); ${formatCost(res.costUsd)} via ${res.modelUsed}`);
+  return {
+    task, dirs: usable.map(x => x.dir), verdicts: usable.map(x => x.result.quality?.verdict.better ?? "none"),
+    runs, patterns, metrics, summary: res.data.summary.trim(), model: res.modelUsed, costUsd: res.costUsd,
+  };
 }

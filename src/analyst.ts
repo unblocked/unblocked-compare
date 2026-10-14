@@ -28,14 +28,33 @@ let debugSeq = 0;
 const ANALYST_CWD = path.join(os.tmpdir(), "unblocked-compare-analyst");
 fs.mkdirSync(ANALYST_CWD, { recursive: true });
 
-export function neutralise(s: string): string {
-  const t = s
+// Blinding: the checker, judge and revision pass must not learn which arm had
+// the research tool. Two levels, because the target repository can be
+// Unblocked's own, where "Unblocked" is the product name all through the code.
+
+// Code (diffs, tool results): rename the research tool's identifiers only.
+// Never rewrite product words and never drop text: a mangled line reads as a
+// defect (a checker once failed an arm three rounds running for a line it
+// had itself truncated).
+export function neutraliseCode(s: string): string {
+  return s
     .replace(/mcp__unblocked__\w+/g, "research_tool")
     .replace(/\bunblocked\s+context[_-](research|get[_-]urls|get[_-]rules|search[_-]\w+)\b/gi, "research_tool")
-    .replace(/\bcontext[_-](research|get[_-]urls|get[_-]rules|search[_-]\w+)\b/g, "research_tool")
-    .replace(/\b(the )?Unblocked (MCP|context|research|tool|search|CLI|skill)s?( tool)?\b/gi, "the research tool")
-    .replace(/\bUnblocked('s)?\b/g, (_, poss) => poss ? "the research tool's" : "the research tool");
-  return t.replace(/[^.\n]*\b(not|n't|never|avoid\w*|without|no)\b[^.\n]*\bresearch tool\b[^.\n]*[.\n]|[^.\n]*\bresearch tool\b[^.\n]*\b(not|n't|never|avoid\w*|without)\b[^.\n]*[.\n]/gi, m => m.endsWith("\n") ? "\n" : "");
+    .replace(/\bcontext[_-](research|get[_-]urls|get[_-]rules|search[_-]\w+)\b/g, "research_tool");
+}
+
+// Prose (final responses, disputes, review records): also rename phrases that
+// talk about using the tool, and drop sentences that say an agent did not use
+// it (only the baseline would write those). The bare product name is left
+// alone, so "available to Unblocked Code" survives intact.
+const TOOL_PHRASE = "\u0000RT\u0000";
+export function neutralise(s: string): string {
+  const t = neutraliseCode(s)
+    .replace(/research_tool/g, TOOL_PHRASE)
+    .replace(/\b(the )?Unblocked('s)? (MCP|context|research|tool|search|CLI|skill|results?|answers?|queries|query|calls?)s?( tool)?\b/gi, TOOL_PHRASE)
+    .replace(/\b(call(ed|ing)?|quer(y|ied|ying)|ask(ed|ing)?|us(e|ed|ing)|via|from|through|with|without) Unblocked\b/gi, (_, verb) => `${verb} ${TOOL_PHRASE}`);
+  const negated = new RegExp(`[^.\\n]*\\b(not|n't|never|avoid\\w*|without|no)\\b[^.\\n]*${TOOL_PHRASE}[^.\\n]*[.\\n]|[^.\\n]*${TOOL_PHRASE}[^.\\n]*\\b(not|n't|never|avoid\\w*|without)\\b[^.\\n]*[.\\n]`, "gi");
+  return t.replace(negated, m => (m.endsWith("\n") ? "\n" : "")).replaceAll(TOOL_PHRASE, "the research tool");
 }
 
 function callOnce(prompt: string, model: string, schema: object, timeoutMs: number): Promise<{ out: RawOut | null; declined: boolean; error: string }> {

@@ -13,7 +13,7 @@
 import fs from "node:fs";
 import type { ArmResult, ComparisonResult, Condition, RequirementRevision, ReviewSpec } from "./types.ts";
 import { formatCost, log } from "./util.ts";
-import { neutralise, runStructured } from "./analyst.ts";
+import { neutralise, neutraliseCode, runStructured } from "./analyst.ts";
 import { isExternal, isResearch } from "./impact.ts";
 
 const RESULT_BUDGET = 4_000;
@@ -85,7 +85,7 @@ function prompt(task: string, spec: ReviewSpec, a: ArmResult, b: ArmResult, pool
 ${neutralise(arm.run.finalResponse).slice(0, 12_000)}
 
 --- EVIDENCE: tool results agent ${label} received from research, GitHub, the web, MCP servers and git history ---
-${neutralise(pool) || "(none)"}
+${pool || "(none)"}
 `;
   return `Two coding agents did the same task. A judge will grade both against the numbered requirements below, which were taken from the task's wording. Sometimes the wording is not what the team wants: the decision lives in a ticket thread, a PR review, a chat discussion, a design doc or an incident, and an agent that finds it should not be graded against the wording it corrected.
 
@@ -119,7 +119,7 @@ export async function reviseRequirements(result: ComparisonResult, model: string
   const first = aIsBaseline ? result.baseline : result.unblocked;
   const second = aIsBaseline ? result.unblocked : result.baseline;
   const cond = (l: "A" | "B"): Condition => ((l === "A") === aIsBaseline ? "baseline" : "unblocked");
-  const pools = { A: neutralise(evidencePool(first)), B: neutralise(evidencePool(second)) };
+  const pools = { A: neutraliseCode(evidencePool(first)), B: neutraliseCode(evidencePool(second)) };
 
   log(`Revisions: checking the requirements against what the agents found, with ${model}…`);
   const res = await runStructured<{ revisions: { index: number; revised: string; reason: string; quote: string; agent: "A" | "B" }[] }>(

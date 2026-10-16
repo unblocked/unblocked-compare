@@ -9,6 +9,7 @@
     "compare": "bun src/index.ts",
     "simulate": "bun src/simulate/index.ts",
     "render": "bun scripts/render_report.ts",
+    "consolidate": "bun scripts/consolidate.ts",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test"
   },

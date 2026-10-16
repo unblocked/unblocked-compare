@@ -17,7 +17,7 @@ bun start -- --agent codex --model gpt-5.5 --repo /path/to/repo --task "implemen
 
 The analysis passes always run through `claude -p`, whatever agent is under test. Order after both arms: requirement revision → blinded judge → economics → impact (episodes) → tie-breaker → context's influence → Summary.
 
-Re-render a report after a report or style change, free: `bun run render <result-dir>`. Rebuild a result from saved transcripts after an analysis change: `bun scripts/report_from_jsonl.ts` (see README).
+Re-render a report after a report or style change, free: `bun run render <result-dir>`. Consolidate repeats of one ticket (one Opus 5.5 call): `bun run consolidate <run-or-batch-dirs>`; a consistent difference across comparable runs is read as the context's influence. Rebuild a result from saved transcripts after an analysis change: `bun scripts/report_from_jsonl.ts` (see README).
 
 Binary overrides: `CLAUDE_BINARY` (default `claude`), `CURSOR_BINARY` (default `agent`), `CODEX_BINARY` (default `codex`).
 
@@ -40,6 +40,7 @@ Binary overrides: `CLAUDE_BINARY` (default `claude`), `CURSOR_BINARY` (default `
 - `src/git.ts`, `src/util.ts`, `src/types.ts` — Git helpers, pricing and formatting, shared types
 - `scripts/report_from_jsonl.ts` — Regenerate a result and report from saved transcripts
 - `scripts/render_report.ts` — Re-render `report.html` from `result.json` (`bun run render`)
+- `src/consolidate.ts`, `scripts/consolidate.ts` — Cross-run consolidation: comparable runs, patterns, and the context's influence from consistent differences (`bun run consolidate`)
 - `src/simulate/index.ts` — `simulate` CLI: fixtures and flags → a compare `Config` with `contextEngine` set
 - `src/engine/` — simulated context engine: `cli.ts` (the fake `unblocked`), `shim.ts` (PATH shim, UC_ENGINE_* env, call log), `prompt.ts` (research prompts), `args.ts`, `discount.ts` (each research call counts as at most 20s in the arm's timings)
 

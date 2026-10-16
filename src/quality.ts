@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import type { ArmResult, ComparisonResult, Condition, DecisiveDiscovery, QualityAssessment, ReviewSpec } from "./types.ts";
 import { formatCost, log } from "./util.ts";
-import { neutralise, runStructured, VERIFY_CMD } from "./analyst.ts";
+import { neutralise, neutraliseCode, runStructured, VERIFY_CMD } from "./analyst.ts";
 
 const DIFF_BUDGET = 40_000;
 
@@ -73,10 +73,10 @@ ${neutralise(arm.run.finalResponse)}
 ${neutralise(reviewRecord(label, arm))}
 
 --- Verification commands agent ${label} ran, with the end of their output ---
-${neutralise(verificationRecord(arm, jsonl))}
+${neutraliseCode(verificationRecord(arm, jsonl))}
 
 --- Diff produced by agent ${label} (${arm.diffStats.filesChanged} files, +${arm.diffStats.linesAdded} -${arm.diffStats.linesRemoved}) ---
-${neutralise(diff)}
+${neutraliseCode(diff)}
 `;
 }
 

@@ -1,6 +1,6 @@
 import type { ArmResult, Condition, ReviewPass, ReviewRequirement, ReviewSpec } from "./types.ts";
 import { formatCost, log } from "./util.ts";
-import { neutralise, runStructured } from "./analyst.ts";
+import { neutralise, neutraliseCode, runStructured } from "./analyst.ts";
 
 const DIFF_BUDGET = 200_000;
 
@@ -70,7 +70,7 @@ ${task}
 ${neutralise(arm.run.finalResponse)}
 
 =================== DIFF (${arm.diffStats.filesChanged} files, +${arm.diffStats.linesAdded} -${arm.diffStats.linesRemoved}) ===================
-${neutralise(diff)}
+${neutraliseCode(diff)}
 `;
 }
 

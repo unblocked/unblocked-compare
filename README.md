@@ -154,6 +154,21 @@ The HTML report opens automatically. See [Reading the report](#reading-the-repor
 
 A run that was killed (contamination, no research call, an outward action, timeout, or an API error such as a session limit) gets no verdict and is left out of the batch tally and medians.
 
+### Consolidating repeats
+
+One run shows one pair of agents; a difference between them may be the context or ordinary variance. Repeats separate the two. After several runs of the same ticket:
+
+```bash
+bun run consolidate results/batch-<id> results/batch-<other-id> [--model=claude-opus-5-5]
+```
+
+A batch folder expands to its runs. One judge call (Opus 5.5 by default) reads every run's result and:
+
+- marks which runs are comparable, meaning both arms delivered the same scope (a run where one arm shipped a fraction of the task is left out of the numbers);
+- names the behaviours that differ between the arms across runs, with the episodes that make them up and their cause: the context, the agent, the environment, or the fix loop.
+
+The harness then reads the trend. The context is the only systematic difference between the arms, so a difference that points the same way in every comparable run (three in four with four or more runs) is the context's doing, less anything the judge traces to a consistent cause other than the context. A difference that changes direction between runs is reported as mixed. Each figure comes with its range across runs. Output goes to `results/consolidated-<timestamp>/` and opens in the browser.
+
 ### Reading the report
 
 The top of the report is the answer; everything else is behind **Full report**.
@@ -198,6 +213,7 @@ src/
 ├── economics.ts    Cost and time breakdown between the arms
 ├── revision.ts     Requirement revision pass: restate a requirement to a quoted team decision
 ├── context-effect.ts  Context's influence from the impact episodes; the Summary writer
+├── consolidate.ts  Cross-run read of the context's influence from repeats
 ├── unblocked-cli.ts   Recognise Unblocked CLI calls and outward actions (push, gh writes) in shell commands
 ├── report.ts       Console + HTML + JSON reports, batch summary
 ├── report-style.ts Report CSS, fonts and the scoreboard count-up
@@ -213,7 +229,8 @@ src/
     └── discount.ts Caps each research call's time in the arm's timings
 scripts/
 ├── report_from_jsonl.ts   Regenerate a result and report from saved transcripts
-└── render_report.ts       Re-render report.html from result.json (`bun run render`)
+├── render_report.ts       Re-render report.html from result.json (`bun run render`)
+└── consolidate.ts         Consolidate repeats of one ticket (`bun run consolidate`)
 ```
 
 #### Canonical transcript
